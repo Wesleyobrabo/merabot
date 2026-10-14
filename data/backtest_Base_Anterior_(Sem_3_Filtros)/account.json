@@ -1,0 +1,15 @@
+{
+  "balance": 9.373465654716469,
+  "available_balance": 9.373465654716469,
+  "initial_balance": 9.8,
+  "equity": 9.373465654716469,
+  "total_trades": 41,
+  "winning_trades": 18,
+  "losing_trades": 23,
+  "max_drawdown": 12.318013661648937,
+  "peak_balance": 10.74420590606072,
+  "daily_starting_balance": 9.8,
+  "daily_realized_pnl": 0.0,
+  "daily_drawdown": 4.227212706974813,
+  "last_daily_reset_day": 286
+}

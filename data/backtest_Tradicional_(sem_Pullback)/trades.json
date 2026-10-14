@@ -1,0 +1,52 @@
+[
+  {
+    "id": "27c09246-0867-4a24-9d5d-c38c2397a86a",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 111.63578999999999,
+    "quantity": 0.22,
+    "realized_pnl": -0.18066949999999338,
+    "timestamp": 1791853152600,
+    "reason": "Supertrend virou Bullish (Trailing Stop)"
+  },
+  {
+    "id": "401664bd-f9d8-49df-a60c-ff514a95d1c9",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 111.9987573561759,
+    "quantity": 0.22,
+    "realized_pnl": -0.11759381835869732,
+    "timestamp": 1791853152604,
+    "reason": "Stop Loss atingido em 112.00"
+  },
+  {
+    "id": "d424a8b8-190f-4a4d-bfa8-c18d95676534",
+    "symbol": "SOLUSDT",
+    "side": "SELL",
+    "price": 112.74610854671545,
+    "quantity": 0.22,
+    "realized_pnl": 0.10339968027740098,
+    "timestamp": 1791853152605,
+    "reason": "Take Profit atingido em 112.75"
+  },
+  {
+    "id": "46ed249c-53cb-400d-bf93-b4d2de81b53c",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 111.7431754332289,
+    "quantity": 0.22,
+    "realized_pnl": 0.1035517046896419,
+    "timestamp": 1791853152607,
+    "reason": "Take Profit atingido em 111.74"
+  },
+  {
+    "id": "2ef8c673-90ae-4bed-b5dc-4f02e8b8e209",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 110.78199505401534,
+    "quantity": 0.22,
+    "realized_pnl": 0.09732028811662616,
+    "timestamp": 1791853152608,
+    "reason": "Take Profit atingido em 110.78"
+  }
+]

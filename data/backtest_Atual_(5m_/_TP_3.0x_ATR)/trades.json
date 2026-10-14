@@ -1,0 +1,212 @@
+[
+  {
+    "id": "8181b278-6911-4355-9a70-10ba13c167e4",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 119.62276202409362,
+    "quantity": 0.2,
+    "realized_pnl": 0.051453595181277484,
+    "timestamp": 1791852817154,
+    "reason": "Take Profit atingido em 119.62"
+  },
+  {
+    "id": "f7a9f327-8686-4098-9e3e-73d13266a6cc",
+    "symbol": "SOLUSDT",
+    "side": "SELL",
+    "price": 121.43916510988026,
+    "quantity": 0.2,
+    "realized_pnl": 0.08173602197605306,
+    "timestamp": 1791852817156,
+    "reason": "Take Profit atingido em 121.44"
+  },
+  {
+    "id": "559904a9-846b-4161-be54-c7068935fe94",
+    "symbol": "SOLUSDT",
+    "side": "SELL",
+    "price": 119.03092889895346,
+    "quantity": 0.21,
+    "realized_pnl": 0.08644626878022933,
+    "timestamp": 1791852817166,
+    "reason": "Take Profit atingido em 119.03"
+  },
+  {
+    "id": "7dc23e7d-419e-4c1f-af29-fc59bc625ea4",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 118.0802090429665,
+    "quantity": 0.21,
+    "realized_pnl": 0.07151570097703797,
+    "timestamp": 1791852817168,
+    "reason": "Take Profit atingido em 118.08"
+  },
+  {
+    "id": "5a1f84f1-bf00-43ef-9ba5-15c85c5a374d",
+    "symbol": "SOLUSDT",
+    "side": "SELL",
+    "price": 116.97345558977408,
+    "quantity": 0.21,
+    "realized_pnl": 0.11450682385255617,
+    "timestamp": 1791852817169,
+    "reason": "Take Profit atingido em 116.97"
+  },
+  {
+    "id": "573816fe-bd50-421e-9e40-dc30907f575a",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 115.31205044198862,
+    "quantity": 0.21,
+    "realized_pnl": 0.06722195718238978,
+    "timestamp": 1791852817190,
+    "reason": "Take Profit atingido em 115.31"
+  },
+  {
+    "id": "d9070300-4524-49a8-abb9-9f727c8b30f1",
+    "symbol": "SOLUSDT",
+    "side": "SELL",
+    "price": 116.04048007697524,
+    "quantity": 0.21,
+    "realized_pnl": -0.12974218383519542,
+    "timestamp": 1791852817200,
+    "reason": "Stop Loss atingido em 116.04"
+  },
+  {
+    "id": "cb7dd481-7b01-4003-8b78-07f8370e5c8d",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 115.56032863780709,
+    "quantity": 0.21,
+    "realized_pnl": 0.09064573606051056,
+    "timestamp": 1791852817210,
+    "reason": "Take Profit atingido em 115.56"
+  },
+  {
+    "id": "17f81afe-73c8-4eed-a40f-e9d601e0c2b0",
+    "symbol": "SOLUSDT",
+    "side": "SELL",
+    "price": 110.20487000000001,
+    "quantity": 0.22,
+    "realized_pnl": -0.09909459999999314,
+    "timestamp": 1791852817219,
+    "reason": "Supertrend virou Bearish (Trailing Stop)"
+  },
+  {
+    "id": "8bdf0701-09d0-449f-8134-d947fbbda9b5",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 109.4761014426239,
+    "quantity": 0.22,
+    "realized_pnl": 0.08776538262274443,
+    "timestamp": 1791852817231,
+    "reason": "Take Profit atingido em 109.48"
+  },
+  {
+    "id": "eeb6abfc-8840-41fc-be6c-388fc077fe76",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 109.33938880969436,
+    "quantity": 0.22,
+    "realized_pnl": -0.10644563813275681,
+    "timestamp": 1791852817243,
+    "reason": "Stop Loss atingido em 109.34"
+  },
+  {
+    "id": "e8f55368-f976-4d36-a4e2-8cda8feef974",
+    "symbol": "SOLUSDT",
+    "side": "SELL",
+    "price": 109.825737089884,
+    "quantity": 0.22,
+    "realized_pnl": -0.05924224022552096,
+    "timestamp": 1791852817252,
+    "reason": "Stop Loss atingido em 109.83"
+  },
+  {
+    "id": "7db3ac9f-217e-42d1-b649-548a4394ff36",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 109.47078750028743,
+    "quantity": 0.22,
+    "realized_pnl": 0.0515531499367674,
+    "timestamp": 1791852817261,
+    "reason": "Take Profit atingido em 109.47"
+  },
+  {
+    "id": "d3cd7c84-ec39-46a9-b5ea-a9f4436b6f43",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 109.83290426021915,
+    "quantity": 0.22,
+    "realized_pnl": 0.06424126275178964,
+    "timestamp": 1791852817271,
+    "reason": "Take Profit atingido em 109.83"
+  },
+  {
+    "id": "f65b8ab3-c3d2-4675-852e-5d6d4eac433b",
+    "symbol": "SOLUSDT",
+    "side": "SELL",
+    "price": 110.18884845246158,
+    "quantity": 0.22,
+    "realized_pnl": -0.060798440458450786,
+    "timestamp": 1791852817282,
+    "reason": "Stop Loss atingido em 110.19"
+  },
+  {
+    "id": "110d3dd5-5a37-44ac-9386-244f840560b1",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 109.73484,
+    "quantity": 0.22,
+    "realized_pnl": -0.09669330000000002,
+    "timestamp": 1791852817291,
+    "reason": "Supertrend virou Bullish (Trailing Stop)"
+  },
+  {
+    "id": "c85dcb63-8ace-43ef-a418-2c0ec08bcdad",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 111.63578999999999,
+    "quantity": 0.22,
+    "realized_pnl": -0.18066949999999338,
+    "timestamp": 1791852817302,
+    "reason": "Supertrend virou Bullish (Trailing Stop)"
+  },
+  {
+    "id": "ef66cd93-4074-4466-8cc6-38025376acab",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 111.9987573561759,
+    "quantity": 0.22,
+    "realized_pnl": -0.11759381835869732,
+    "timestamp": 1791852817311,
+    "reason": "Stop Loss atingido em 112.00"
+  },
+  {
+    "id": "eceac9f1-7319-4e62-9307-8ec23b2771e9",
+    "symbol": "SOLUSDT",
+    "side": "SELL",
+    "price": 112.74610854671545,
+    "quantity": 0.22,
+    "realized_pnl": 0.10339968027740098,
+    "timestamp": 1791852817322,
+    "reason": "Take Profit atingido em 112.75"
+  },
+  {
+    "id": "43308d4b-45ef-4eae-ae33-e2050d094485",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 111.7431754332289,
+    "quantity": 0.22,
+    "realized_pnl": 0.1035517046896419,
+    "timestamp": 1791852817330,
+    "reason": "Take Profit atingido em 111.74"
+  },
+  {
+    "id": "95e97e95-8c51-485b-9ef0-ef5e7c1ac726",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 110.78199505401534,
+    "quantity": 0.22,
+    "realized_pnl": 0.09732028811662616,
+    "timestamp": 1791852817340,
+    "reason": "Take Profit atingido em 110.78"
+  }
+]

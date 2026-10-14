@@ -1,0 +1,97 @@
+# ====================================================================
+# BINANCE FUTURES RUST BOT - EXEMPLO DE CONFIGURACAO
+# ====================================================================
+
+[exchange]
+api_key = "SUA_API_KEY_AQUI"
+api_secret = "SUA_API_SECRET_AQUI"
+
+testnet_api_key = "SUA_TESTNET_API_KEY_AQUI"
+testnet_api_secret = "SUA_TESTNET_API_SECRET_AQUI"
+
+testnet = true
+
+[trading]
+symbol = "SOLUSDT"
+interval = "15m"
+leverage = 1
+margin_type = "ISOLATED"
+paper_trading = false
+initial_paper_balance = 100.0
+auto_sync_balance = true
+sync_balance_interval_secs = 60
+fetch_real_balance_on_paper = false
+
+[risk]
+risk_per_trade_percent = 16.0
+max_drawdown_percent = 35.0
+max_position_usdt = 50.0
+min_order_qty = 0.01
+qty_precision = 2
+price_precision = 2
+sl_atr_multiplier = 1.5
+tp_atr_multiplier = 2.0
+slippage_percent = 0.05
+enable_breakeven = false
+breakeven_atr_multiplier = 0.8
+enable_daily_loss_limit = true
+max_daily_loss_percent = 25.0
+
+[strategy]
+name = "rolling_12h_breakout_15m"
+rolling_lookback_candles = 48
+max_trades_24h = 3
+enable_take_profit = true
+tp_percent = 2.5
+sl_mode = "percent"
+sl_percent = 1.2
+enable_trend_filter = true
+ema_trend_period = 200
+breakout_trigger = "close"
+one_trade_per_day = false
+max_trades_per_day = 3
+
+supertrend_period = 10
+supertrend_multiplier = 2.2
+ema_fast_period = 9
+ema_slow_period = 21
+rsi_period = 14
+rsi_overbought = 70.0
+rsi_oversold = 30.0
+enable_volume_filter = true
+volume_sma_period = 20
+enable_pullback_entry = false
+pullback_rsi_min = 38.0
+pullback_rsi_max = 70.0
+pullback_cooldown_candles = 2
+enable_chop_filter = false
+max_chop_threshold = 60.0
+enable_confluence_filter = false
+min_confluence_score = 0.65
+enable_htf_veto = false
+
+[strategy.cascade]
+enabled = true
+length = 100
+sd_entry = 2.0
+min_norm_slope = 0.10
+use_ignition = true
+ign_atr_mult = 1.5
+ign_vol_mult = 1.8
+use_mtf = true
+min_confluence = 0.70
+atr_len = 22
+atr_mult = 3.0
+risk_per_trade = 2.0
+
+[server]
+host = "0.0.0.0"
+port = 8081
+auto_tunnel = true
+password = "troque_sua_senha_aqui"
+
+[notifications]
+enabled = false
+telegram_bot_token = ""
+telegram_chat_id = ""
+discord_webhook_url = ""
