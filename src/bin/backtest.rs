@@ -108,6 +108,7 @@ async fn run_simulation(
                         reason: format!("Stop Loss atingido em {:.2}", sl),
                         stop_loss: None,
                         take_profit: None,
+                        partial_ratio: None,
                     };
                     let _ = exec.process_signal(sig, &mut risk).await;
                 }
@@ -122,6 +123,7 @@ async fn run_simulation(
                             reason: format!("Take Profit atingido em {:.2}", tp),
                             stop_loss: None,
                             take_profit: None,
+                            partial_ratio: None,
                         };
                         let _ = exec.process_signal(sig, &mut risk).await;
                     }
@@ -137,6 +139,7 @@ async fn run_simulation(
                         reason: format!("Stop Loss atingido em {:.2}", sl),
                         stop_loss: None,
                         take_profit: None,
+                        partial_ratio: None,
                     };
                     let _ = exec.process_signal(sig, &mut risk).await;
                 }
@@ -151,6 +154,7 @@ async fn run_simulation(
                             reason: format!("Take Profit atingido em {:.2}", tp),
                             stop_loss: None,
                             take_profit: None,
+                            partial_ratio: None,
                         };
                         let _ = exec.process_signal(sig, &mut risk).await;
                     }
@@ -178,6 +182,7 @@ async fn run_simulation(
                 reason: "Fim do período (Fechamento Mercado)".to_string(),
                 stop_loss: None,
                 take_profit: None,
+                partial_ratio: None,
             },
             PositionSide::Short => Signal {
                 signal_type: SignalType::CloseShort,
@@ -186,6 +191,7 @@ async fn run_simulation(
                 reason: "Fim do período (Fechamento Mercado)".to_string(),
                 stop_loss: None,
                 take_profit: None,
+                partial_ratio: None,
             },
             PositionSide::None => unreachable!(),
         };

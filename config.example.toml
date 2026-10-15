@@ -1,5 +1,6 @@
 # ====================================================================
 # BINANCE FUTURES RUST BOT - EXEMPLO DE CONFIGURACAO
+# MOTOR ÚNICO: CASCATA TURBO MTF (OLS 100 + BANDAS ADAPTATIVAS + TP PARCIAL 50%)
 # ====================================================================
 
 [exchange]
@@ -32,27 +33,15 @@ price_precision = 2
 sl_atr_multiplier = 1.5
 tp_atr_multiplier = 2.0
 slippage_percent = 0.05
-enable_breakeven = false
-breakeven_atr_multiplier = 0.8
+enable_breakeven = true
+breakeven_atr_multiplier = 1.0
 enable_daily_loss_limit = true
 max_daily_loss_percent = 25.0
 
 [strategy]
-name = "rolling_12h_breakout_15m"
-rolling_lookback_candles = 48
-max_trades_24h = 3
-enable_take_profit = true
-tp_percent = 2.5
-sl_mode = "percent"
-sl_percent = 1.2
-enable_trend_filter = true
-ema_trend_period = 200
-breakout_trigger = "close"
-one_trade_per_day = false
-max_trades_per_day = 3
-
-supertrend_period = 10
-supertrend_multiplier = 2.2
+name = "cascade_turbo_mtf"
+supertrend_period = 22
+supertrend_multiplier = 3.0
 ema_fast_period = 9
 ema_slow_period = 21
 rsi_period = 14
@@ -60,21 +49,12 @@ rsi_overbought = 70.0
 rsi_oversold = 30.0
 enable_volume_filter = true
 volume_sma_period = 20
-enable_pullback_entry = false
-pullback_rsi_min = 38.0
-pullback_rsi_max = 70.0
-pullback_cooldown_candles = 2
-enable_chop_filter = false
-max_chop_threshold = 60.0
-enable_confluence_filter = false
-min_confluence_score = 0.65
-enable_htf_veto = false
 
 [strategy.cascade]
 enabled = true
 length = 100
 sd_entry = 2.0
-min_norm_slope = 0.10
+min_norm_slope = 0.08
 use_ignition = true
 ign_atr_mult = 1.5
 ign_vol_mult = 1.8

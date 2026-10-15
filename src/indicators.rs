@@ -473,130 +473,48 @@ impl IndicatorEngine {
     }
 
     pub fn update(&mut self, candle: &Candle) -> IndicatorValues {
-        let st_res = self.supertrend.update(candle.high, candle.low, candle.close);
-        let ema_f = self.ema_fast.update(candle.close).unwrap_or(candle.close);
-        let ema_s = self.ema_slow.update(candle.close).unwrap_or(candle.close);
-        let ema_200_val = self.ema_200.update(candle.close).unwrap_or(candle.close);
-        let rsi_val = self.rsi.update(candle.close).unwrap_or(50.0);
-        let atr_val = self.supertrend.current_atr().unwrap_or(candle.high - candle.low);
-        let vol_sma = self.volume_sma.update(candle.volume);
-        let is_vol_high = candle.volume >= vol_sma;
-        let chop_val = self.chop.update(candle);
-        let htf_bias = self.htf.update(candle);
+        self.update_with_position(candle, PositionSide::None, 0.0)
+    }
 
-        let (st_val, st_dir) = st_res.unwrap_or((candle.close, 1));
-        let trend_filter_bullish = candle.close >= ema_200_val;
-
-        // Mantém janela deslizante de até 300 candles para cálculo estável do Range Móvel de 96 períodos (24h)
+    pub fn update_with_position(&mut self, candle: &Candle, pos_side: PositionSide, entry_price: f64) -> IndicatorValues {
         self.recent_candles.push(candle.clone());
         if self.recent_candles.len() > 300 {
             self.recent_candles.remove(0);
         }
 
-        let n_c = self.recent_candles.len();
-        // Donchian 20 de Entrada (exclui a vela atual recém-inserida para evitar lookahead)
-        let (donchian_high_20, donchian_low_20) = if n_c >= 21 {
-            let start = n_c - 21;
-            let end = n_c - 1;
-            let mut h = f64::MIN;
-            let mut l = f64::MAX;
-            for c in &self.recent_candles[start..end] {
-                if c.high > h { h = c.high; }
-                if c.low < l { l = c.low; }
-            }
-            (h, l)
-        } else {
-            (candle.high, candle.low)
-        };
+        let cascade_telem = self.cascade_engine.update(candle, pos_side, entry_price);
+        let atr_val = self.cascade_engine.atr.value().unwrap_or(candle.high - candle.low);
+        let st_val = cascade_telem.active_stop.unwrap_or(candle.close);
+        let st_dir = if cascade_telem.is_uptrend { 1 } else { -1 };
 
-        // Donchian 10 de Saída Estrutural (exclui a vela atual)
-        let (donchian_exit_low_10, donchian_exit_high_10) = if n_c >= 11 {
-            let start = n_c - 11;
-            let end = n_c - 1;
-            let mut h = f64::MIN;
-            let mut l = f64::MAX;
-            for c in &self.recent_candles[start..end] {
-                if c.high > h { h = c.high; }
-                if c.low < l { l = c.low; }
-            }
-            (l, h)
-        } else {
-            (candle.low, candle.high)
-        };
-
-        // Range Móvel Configurável (ex: 48 candles = 12 horas ou 96 candles = 24 horas anteriores à vela atual)
-        let lookback = self.rolling_lookback.max(1);
-        let (rolling_high_96, rolling_low_96) = if n_c >= lookback + 1 {
-            let start = n_c - (lookback + 1);
-            let end = n_c - 1;
-            let mut h = f64::MIN;
-            let mut l = f64::MAX;
-            for c in &self.recent_candles[start..end] {
-                if c.high > h { h = c.high; }
-                if c.low < l { l = c.low; }
-            }
-            (h, l)
-        } else if n_c > 1 {
-            let mut h = f64::MIN;
-            let mut l = f64::MAX;
-            for c in &self.recent_candles[0..n_c - 1] {
-                if c.high > h { h = c.high; }
-                if c.low < l { l = c.low; }
-            }
-            (h, l)
-        } else {
-            (candle.high, candle.low)
-        };
-
-        let rolling_range_pct = if rolling_low_96 > 0.0 {
-            ((rolling_high_96 - rolling_low_96) / rolling_low_96) * 100.0
-        } else {
-            0.0
-        };
-
-        let market_regime = Self::calculate_market_regime(&self.recent_candles);
-
-        let current_side = if st_dir == 1 { PositionSide::Long } else { PositionSide::Short };
-        let mut temp_vals = IndicatorValues {
+        IndicatorValues {
             supertrend: st_val,
             supertrend_direction: st_dir,
-            ema_fast: ema_f,
-            ema_slow: ema_s,
-            rsi: rsi_val,
+            ema_fast: cascade_telem.baseline,
+            ema_slow: cascade_telem.baseline,
+            rsi: cascade_telem.rsi_val,
             atr: atr_val,
-            volume_sma: vol_sma,
-            is_volume_high: is_vol_high,
-            market_regime: market_regime.clone(),
-            chop: chop_val,
-            confluence_score: 0.0,
-            htf_bias,
-            donchian_high_20,
-            donchian_low_20,
-            donchian_exit_low_10,
-            donchian_exit_high_10,
-            ema_200: ema_200_val,
-            trend_filter_bullish,
-            rolling_high_96,
-            rolling_low_96,
-            rolling_range_pct,
-            session_range_high: rolling_high_96,
-            session_range_low: rolling_low_96,
-            session_range_ready: n_c >= 20,
+            volume_sma: 0.0,
+            is_volume_high: true,
+            market_regime: MarketRegimeAnalysis::default(),
+            chop: cascade_telem.chop_val,
+            confluence_score: cascade_telem.confluence_score_long.max(cascade_telem.confluence_score_short),
+            htf_bias: if cascade_telem.d_bias != 0 { cascade_telem.d_bias } else { cascade_telem.h_bias },
+            donchian_high_20: cascade_telem.upper_entry,
+            donchian_low_20: cascade_telem.lower_entry,
+            donchian_exit_low_10: cascade_telem.lower_entry,
+            donchian_exit_high_10: cascade_telem.upper_entry,
+            ema_200: cascade_telem.baseline,
+            trend_filter_bullish: cascade_telem.is_uptrend,
+            rolling_high_96: cascade_telem.upper_entry,
+            rolling_low_96: cascade_telem.lower_entry,
+            rolling_range_pct: if cascade_telem.lower_entry > 0.0 { ((cascade_telem.upper_entry - cascade_telem.lower_entry) / cascade_telem.lower_entry) * 100.0 } else { 0.0 },
+            session_range_high: cascade_telem.upper_entry,
+            session_range_low: cascade_telem.lower_entry,
+            session_range_ready: true,
+            cascade: cascade_telem,
             ..Default::default()
-        };
-        let conf_score = Self::calculate_confluence(current_side, candle, &temp_vals);
-        temp_vals.confluence_score = conf_score;
-        let cascade_telem = self.cascade_engine.update(candle, PositionSide::None, 0.0);
-        temp_vals.cascade = cascade_telem;
-
-        temp_vals
-    }
-
-    pub fn update_with_position(&mut self, candle: &Candle, pos_side: PositionSide, entry_price: f64) -> IndicatorValues {
-        let mut vals = self.update(candle);
-        let cascade_telem = self.cascade_engine.update(candle, pos_side, entry_price);
-        vals.cascade = cascade_telem;
-        vals
+        }
     }
 
     pub fn calculate_confluence(
@@ -1123,8 +1041,12 @@ impl CascadeEngine {
         let is_uptrend = norm_slope > self.cfg.min_norm_slope;
         let is_downtrend = norm_slope < -self.cfg.min_norm_slope;
 
-        let upper_entry = baseline + (atr_val * self.cfg.sd_entry);
-        let lower_entry = baseline - (atr_val * self.cfg.sd_entry);
+        // Choppiness Index e Bandas Adaptativas (Cascata Turbo)
+        let chop_val = self.chop.update(candle);
+        let strong_trend_regime = chop_val < 50.0;
+        let adaptive_sd = if chop_val >= 50.0 { 2.2 } else { 1.8 };
+        let upper_entry = baseline + (atr_val * adaptive_sd);
+        let lower_entry = baseline - (atr_val * adaptive_sd);
 
         let st_res = self.supertrend.update(candle.high, candle.low, candle.close);
         let (st_line, st_dir) = st_res.unwrap_or((candle.close, 1));
@@ -1238,9 +1160,7 @@ impl CascadeEngine {
             0.0
         };
 
-        // Choppiness
-        let chop_val = self.chop.update(candle);
-        let strong_trend_regime = chop_val < 50.0;
+        // Choppiness Score
         let chop_score = if chop_val < 38.2 {
             1.0
         } else if chop_val < 50.0 {
@@ -1290,19 +1210,22 @@ impl CascadeEngine {
             + exhaustion_score_short * 0.15
             + chop_score * 0.10;
 
-        // Momentum Ignition
+        // Smart Momentum Ignition (Travado se o mercado estiver consolidando / chop >= 46)
         let candle_range = candle.high - candle.low;
+        let vol_expansion = candle.volume > vol_sma * self.cfg.ign_vol_mult;
         let ignition_long = self.cfg.use_ignition
+            && chop_val < 46.0
+            && vol_expansion
             && candle_range > atr_val * self.cfg.ign_atr_mult
-            && candle.volume > vol_sma * self.cfg.ign_vol_mult
             && candle.close > candle.open
             && (candle.close - candle.low) > candle_range * 0.6
             && candle.close > baseline
             && confluence_score_long >= 0.5;
 
         let ignition_short = self.cfg.use_ignition
+            && chop_val < 46.0
+            && vol_expansion
             && candle_range > atr_val * self.cfg.ign_atr_mult
-            && candle.volume > vol_sma * self.cfg.ign_vol_mult
             && candle.close < candle.open
             && (candle.high - candle.close) > candle_range * 0.6
             && candle.close < baseline
@@ -1320,8 +1243,8 @@ impl CascadeEngine {
         let size_factor_long = if !self.cfg.use_mtf { 1.0 } else if align_long >= 2 { 1.0 } else { 0.5 };
         let size_factor_short = if !self.cfg.use_mtf { 1.0 } else if align_short >= 2 { 1.0 } else { 0.5 };
 
-        let setup_long = mtf_ok_long && ((candle.close > upper_entry && is_uptrend && confluence_score_long >= self.cfg.min_confluence) || ignition_long);
-        let setup_short = mtf_ok_short && ((candle.close < lower_entry && is_downtrend && confluence_score_short >= self.cfg.min_confluence) || ignition_short);
+        let setup_long = mtf_ok_long && (((candle.close > upper_entry && is_uptrend && candle.close > candle.open) && confluence_score_long >= self.cfg.min_confluence) || (ignition_long && norm_slope > 0.05));
+        let setup_short = mtf_ok_short && (((candle.close < lower_entry && is_downtrend && candle.close < candle.open) && confluence_score_short >= self.cfg.min_confluence) || (ignition_short && norm_slope < -0.05));
 
         let telem = CascadeTelemetry {
             enabled: self.cfg.enabled,

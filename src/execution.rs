@@ -438,6 +438,9 @@ impl ExecutionEngine {
                     self.position.stop_loss = Some(final_sl);
                     self.position.take_profit = signal.take_profit;
                     self.position.unrealized_pnl = 0.0;
+                    self.position.be_locked = false;
+                    self.position.partial_taken = false;
+                    self.position.initial_amount = qty;
 
                     let margin = (executed_price * qty) / (self.config.trading.leverage as f64);
                     self.account.available_balance = (self.account.balance - margin).max(0.0);
@@ -534,6 +537,9 @@ impl ExecutionEngine {
                     self.position.stop_loss = Some(final_sl);
                     self.position.take_profit = signal.take_profit;
                     self.position.unrealized_pnl = 0.0;
+                    self.position.be_locked = false;
+                    self.position.partial_taken = false;
+                    self.position.initial_amount = qty;
 
                     let margin = (executed_price * qty) / (self.config.trading.leverage as f64);
                     self.account.available_balance = (self.account.balance - margin).max(0.0);
@@ -586,6 +592,9 @@ impl ExecutionEngine {
                     self.position.unrealized_pnl = 0.0;
                     self.position.stop_loss = None;
                     self.position.take_profit = None;
+                    self.position.be_locked = false;
+                    self.position.partial_taken = false;
+                    self.position.initial_amount = 0.0;
                 }
             }
             SignalType::CloseShort => {
@@ -623,6 +632,107 @@ impl ExecutionEngine {
                     self.position.unrealized_pnl = 0.0;
                     self.position.stop_loss = None;
                     self.position.take_profit = None;
+                    self.position.be_locked = false;
+                    self.position.partial_taken = false;
+                    self.position.initial_amount = 0.0;
+                }
+            }
+            SignalType::PartialCloseLong => {
+                if self.position.side == PositionSide::Long && self.position.amount > 0.0 && !self.position.partial_taken {
+                    let ratio = signal.partial_ratio.unwrap_or(0.5);
+                    let qty_to_close = (self.position.amount * ratio).max(self.config.risk.min_order_qty);
+                    let pnl = (signal.price - self.position.entry_price) * qty_to_close;
+
+                    info!(
+                        "[PARCIAL 50% LONG] Fechando {:.4} @ {:.2} | PnL: {:.2} USDT | Motivo: {}",
+                        qty_to_close, signal.price, pnl, signal.reason
+                    );
+
+                    if let Some(ref client) = self.client {
+                        let cid = format!("part_{}", Uuid::new_v4().simple());
+                        let _ = client
+                            .place_market_order(
+                                &self.config.trading.symbol,
+                                OrderSide::Sell,
+                                qty_to_close,
+                                true,
+                                Some(cid),
+                                self.config.risk.qty_precision,
+                            )
+                            .await;
+
+                        if let Some(new_sl) = signal.stop_loss {
+                            let _ = client.cancel_all_open_orders(&self.config.trading.symbol).await;
+                            let sl_cid = format!("sl_be_{}", Uuid::new_v4().simple());
+                            let _ = client
+                                .place_stop_market_order(
+                                    &self.config.trading.symbol,
+                                    OrderSide::Sell,
+                                    new_sl,
+                                    Some(sl_cid),
+                                    self.config.risk.price_precision,
+                                )
+                                .await;
+                        }
+                    }
+
+                    let entry_price = self.position.entry_price;
+                    self.record_trade(OrderSide::Sell, entry_price, signal.price, qty_to_close, pnl, signal.reason).await;
+                    self.position.amount = (self.position.amount - qty_to_close).max(0.0);
+                    self.position.partial_taken = true;
+                    self.position.be_locked = true;
+                    if let Some(new_sl) = signal.stop_loss {
+                        self.position.stop_loss = Some(new_sl);
+                    }
+                }
+            }
+            SignalType::PartialCloseShort => {
+                if self.position.side == PositionSide::Short && self.position.amount > 0.0 && !self.position.partial_taken {
+                    let ratio = signal.partial_ratio.unwrap_or(0.5);
+                    let qty_to_close = (self.position.amount * ratio).max(self.config.risk.min_order_qty);
+                    let pnl = (self.position.entry_price - signal.price) * qty_to_close;
+
+                    info!(
+                        "[PARCIAL 50% SHORT] Fechando {:.4} @ {:.2} | PnL: {:.2} USDT | Motivo: {}",
+                        qty_to_close, signal.price, pnl, signal.reason
+                    );
+
+                    if let Some(ref client) = self.client {
+                        let cid = format!("part_{}", Uuid::new_v4().simple());
+                        let _ = client
+                            .place_market_order(
+                                &self.config.trading.symbol,
+                                OrderSide::Buy,
+                                qty_to_close,
+                                true,
+                                Some(cid),
+                                self.config.risk.qty_precision,
+                            )
+                            .await;
+
+                        if let Some(new_sl) = signal.stop_loss {
+                            let _ = client.cancel_all_open_orders(&self.config.trading.symbol).await;
+                            let sl_cid = format!("sl_be_{}", Uuid::new_v4().simple());
+                            let _ = client
+                                .place_stop_market_order(
+                                    &self.config.trading.symbol,
+                                    OrderSide::Buy,
+                                    new_sl,
+                                    Some(sl_cid),
+                                    self.config.risk.price_precision,
+                                )
+                                .await;
+                        }
+                    }
+
+                    let entry_price = self.position.entry_price;
+                    self.record_trade(OrderSide::Buy, entry_price, signal.price, qty_to_close, pnl, signal.reason).await;
+                    self.position.amount = (self.position.amount - qty_to_close).max(0.0);
+                    self.position.partial_taken = true;
+                    self.position.be_locked = true;
+                    if let Some(new_sl) = signal.stop_loss {
+                        self.position.stop_loss = Some(new_sl);
+                    }
                 }
             }
             SignalType::Hold => {}

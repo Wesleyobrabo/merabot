@@ -425,6 +425,9 @@ impl BinanceFuturesClient {
                     liquidation_price: None,
                     max_loss_usdt: None,
                     distance_to_sl_pct: None,
+                    be_locked: false,
+                    partial_taken: false,
+                    initial_amount: amt.abs(),
                 }));
             }
         }

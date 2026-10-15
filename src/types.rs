@@ -76,6 +76,12 @@ pub struct Position {
     pub max_loss_usdt: Option<f64>,
     #[serde(default)]
     pub distance_to_sl_pct: Option<f64>,
+    #[serde(default)]
+    pub be_locked: bool,
+    #[serde(default)]
+    pub partial_taken: bool,
+    #[serde(default)]
+    pub initial_amount: f64,
 }
 
 impl Position {
@@ -93,6 +99,9 @@ impl Position {
             liquidation_price: None,
             max_loss_usdt: None,
             distance_to_sl_pct: None,
+            be_locked: false,
+            partial_taken: false,
+            initial_amount: 0.0,
         }
     }
 
@@ -176,6 +185,8 @@ pub enum SignalType {
     OpenShort,
     CloseLong,
     CloseShort,
+    PartialCloseLong,
+    PartialCloseShort,
     Hold,
 }
 
@@ -187,6 +198,8 @@ pub struct Signal {
     pub reason: String,
     pub stop_loss: Option<f64>,
     pub take_profit: Option<f64>,
+    #[serde(default)]
+    pub partial_ratio: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
