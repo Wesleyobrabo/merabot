@@ -319,4 +319,4 @@ if barstate.islast and show_hud
     table.cell(hud, 1, 7, ignition_long ? "IGNITION LONG" : (ignition_short ? "IGNITION SHORT" : (chop_val > 58.0 ? "Travado" : "Monitorando")), text_color=ignition_long ? color.green : (ignition_short ? color.red : color.gray), text_size=size.small)
     
     table.cell(hud, 0, 8, "Gestão de Saída", text_color=color.white, text_size=size.small)
-    table.cell(hud, 1, 8, "TP 50% (+2.5%) / BE (+0.25%)", text_color=color.cyan, text_size=size.small)
+    table.cell(hud, 1, 8, "TP 50% (+2.5%) / BE (+0.25%)", text_color=color.aqua, text_size=size.small)
