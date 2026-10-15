@@ -1,0 +1,322 @@
+//@version=5
+strategy("MERABOT — CASCATA TURBO MTF (Prop Desk)", 
+         shorttitle="MERABOT_CASCADE", 
+         overlay=true, 
+         initial_capital=1000, 
+         default_qty_type=strategy.percent_of_equity, 
+         default_qty_value=100, 
+         commission_type=strategy.commission.percent, 
+         commission_value=0.05, 
+         slippage=1, 
+         pyramiding=0)
+
+// ==============================================================================
+// 1. INPUTS — CONFIGURAÇÃO IDÊNTICA AO BOT RUST (config.toml)
+// ==============================================================================
+grp_engine   = "Motor de Execução (OLS 100 & Bandas Adaptativas)"
+len_ols      = input.int(100, "Comprimento OLS Baseline", minval=10, group=grp_engine)
+min_ns       = input.float(0.08, "Slope Mínimo Normalizado (OLS/ATR)", step=0.01, group=grp_engine)
+atr_len      = input.int(22, "Período ATR Supertrend", minval=1, group=grp_engine)
+atr_mult     = input.float(3.0, "Multiplicador ATR Supertrend", step=0.1, group=grp_engine)
+
+grp_chop     = "Choppiness & Bandas Adaptativas"
+chop_len     = input.int(14, "Período Choppiness Index", minval=2, group=grp_chop)
+sd_trend     = input.float(1.8, "Largura Banda em Tendência Forte (Chop < 50)", step=0.1, group=grp_chop)
+sd_lateral   = input.float(2.2, "Largura Banda em Consolidação (Chop >= 50)", step=0.1, group=grp_chop)
+
+grp_ign      = "Smart Momentum Ignition"
+use_ign      = input.bool(true, "Ativar Smart Ignition", group=grp_ign)
+ign_atr_mult = input.float(1.5, "Multiplicador ATR da Vela de Ignição", step=0.1, group=grp_ign)
+ign_vol_mult = input.float(1.8, "Multiplicador de Volume da Ignição", step=0.1, group=grp_ign)
+ign_chop_max = input.float(46.0, "Teto Choppiness para Ignição (Chop < 46)", step=0.5, group=grp_ign)
+
+grp_mtf      = "Filtros Multi-Timeframe (MTF Cascade)"
+use_mtf      = input.bool(true, "Ativar Sincronização MTF (D1 + 4h)", group=grp_mtf)
+tf_d1        = input.timeframe("D", "Timeframe Macro (Veto Diário)", group=grp_mtf)
+tf_h4        = input.timeframe("240", "Timeframe Contexto (4 Horas)", group=grp_mtf)
+
+grp_conf     = "Confluência Bayesiana & Estrutura"
+min_conf     = input.float(0.70, "Limiar Mínimo de Confluência (0.00 - 1.00)", step=0.05, group=grp_conf)
+pivots_len   = input.int(10, "Período dos Pivots de Estrutura", minval=3, group=grp_conf)
+rsi_len      = input.int(14, "Período RSI Adaptativo", minval=2, group=grp_conf)
+vol_sma_len  = input.int(20, "Período SMA de Volume", minval=1, group=grp_conf)
+
+grp_trade    = "Gestão da Operação (Cascata Turbo)"
+tp_partial_p = input.float(2.50, "Take Profit Parcial (%)", step=0.1, group=grp_trade)
+tp_ratio     = input.float(50.0, "Percentual Realizado na Parcial (%)", step=5.0, group=grp_trade)
+be_lock_pct  = input.float(0.25, "Lucro Mínimo Travado no Breakeven (%)", step=0.05, group=grp_trade)
+show_hud     = input.bool(true, "Exibir Tabela de Telemetria (HUD)", group=grp_trade)
+
+// ==============================================================================
+// 2. CÁLCULO DO CHOPPINESS INDEX & BANDAS ADAPTATIVAS
+// ==============================================================================
+calc_chop(len) =>
+    ci_atr = ta.atr(1)
+    ci_sum = math.sum(ci_atr, len)
+    ci_hi  = ta.highest(high, len)
+    ci_lo  = ta.lowest(low, len)
+    ci_rng = ci_hi - ci_lo
+    ci_rng > 0 ? 100.0 * (math.log10(ci_sum / ci_rng) / math.log10(len)) : 50.0
+
+chop_val = calc_chop(chop_len)
+adaptive_sd = chop_val >= 50.0 ? sd_lateral : sd_trend
+
+// ==============================================================================
+// 3. REGRESSÃO LINEAR OLS 100 & SLOPE NORMALIZADO (15M EXECUTION)
+// ==============================================================================
+atr_val = ta.atr(atr_len)
+baseline = ta.linreg(close, len_ols, 0)
+baseline_3 = ta.linreg(close, len_ols, 3)
+raw_slope = (baseline - baseline_3) / 3.0
+slope_smooth = ta.ema(raw_slope, 3)
+norm_slope = atr_val > 0 ? slope_smooth / atr_val : 0.0
+
+is_uptrend   = norm_slope > min_ns
+is_downtrend = norm_slope < -min_ns
+
+upper_entry = baseline + (atr_val * adaptive_sd)
+lower_entry = baseline - (atr_val * adaptive_sd)
+
+// ==============================================================================
+// 4. SUPERTREND NATIVO & TRAILING STOP
+// ==============================================================================
+[st_line, st_dir] = ta.supertrend(atr_mult, atr_len)
+
+// ==============================================================================
+// 5. FILTROS MULTI-TIMEFRAME (MACRO D1 + CONTEXTO 4H)
+// ==============================================================================
+f_calc_htf_bias(tf) =>
+    h_close   = request.security(syminfo.tickerid, tf, close, lookahead=barmerge.lookahead_off)
+    h_base    = request.security(syminfo.tickerid, tf, ta.linreg(close, len_ols, 0), lookahead=barmerge.lookahead_off)
+    h_base_3  = request.security(syminfo.tickerid, tf, ta.linreg(close, len_ols, 3), lookahead=barmerge.lookahead_off)
+    h_atr     = request.security(syminfo.tickerid, tf, ta.atr(atr_len), lookahead=barmerge.lookahead_off)
+    h_slope   = (h_base - h_base_3) / 3.0
+    h_ns      = h_atr > 0 ? h_slope / h_atr : 0.0
+    h_bias    = h_ns > min_ns ? 1 : (h_ns < -min_ns ? -1 : 0)
+    [h_bias, h_ns]
+
+[d_bias, d_ns] = f_calc_htf_bias(tf_d1)
+[h_bias, h_ns] = f_calc_htf_bias(tf_h4)
+
+align_long  = (d_bias == 1 ? 1 : 0) + (h_bias == 1 ? 1 : 0)
+align_short = (d_bias == -1 ? 1 : 0) + (h_bias == -1 ? 1 : 0)
+veto_long   = d_bias == -1
+veto_short  = d_bias == 1
+
+mtf_ok_long  = not use_mtf or (not veto_long and align_long >= 1)
+mtf_ok_short = not use_mtf or (not veto_short and align_short >= 1)
+size_factor_long  = not use_mtf ? 1.0 : (align_long >= 2 ? 1.0 : 0.5)
+size_factor_short = not use_mtf ? 1.0 : (align_short >= 2 ? 1.0 : 0.5)
+
+// ==============================================================================
+// 6. ESTRUTURA DE MERCADO (PIVOTS HH / HL / LH / LL)
+// ==============================================================================
+ph = ta.pivothigh(high, pivots_len, pivots_len)
+pl = ta.pivotlow(low, pivots_len, pivots_len)
+
+var float last_hh = na
+var float last_hl = na
+var float last_lh = na
+var float last_ll = na
+
+if not na(ph)
+    if na(last_hh) or ph > last_hh
+        last_hh := ph
+    else
+        last_lh := ph
+
+if not na(pl)
+    if na(last_hl) or pl < last_hl
+        last_hl := pl
+    else
+        last_ll := pl
+
+struct_score_long = 0.0
+if not na(last_hh)
+    if close > last_hh
+        struct_score_long := (not na(last_hl) and low > last_hl) ? 1.0 : 0.7
+    else if close > last_hh * 0.995
+        struct_score_long := 0.5
+
+struct_score_short = 0.0
+if not na(last_ll)
+    if close < last_ll
+        struct_score_short := (not na(last_lh) and high < last_lh) ? 1.0 : 0.7
+    else if close < last_ll * 1.005
+        struct_score_short := 0.5
+
+// ==============================================================================
+// 7. MOMENTUM INSTITUCIONAL, VOLATILIDADE & RSI ADAPTATIVO
+// ==============================================================================
+vol_sma = ta.sma(volume, vol_sma_len)
+price_change = close - close[3]
+
+mom_score_long = (price_change > 0 and volume > vol_sma * 1.5) ? 1.0 : ((price_change > 0 and volume > vol_sma) ? 0.7 : (price_change > 0 ? 0.4 : 0.0))
+mom_score_short = (price_change < 0 and volume > vol_sma * 1.5) ? 1.0 : ((price_change < 0 and volume > vol_sma) ? 0.7 : (price_change < 0 ? 0.4 : 0.0))
+
+atr_sma50 = ta.sma(atr_val, 50)
+atr_expansion = atr_sma50 > 0 ? atr_val / atr_sma50 : 1.0
+vol_score = atr_expansion > 1.3 ? 1.0 : (atr_expansion > 1.1 ? 0.8 : (atr_expansion > 0.9 ? 0.5 : 0.0))
+
+chop_score = chop_val < 38.2 ? 1.0 : (chop_val < 50.0 ? 0.7 : (chop_val < 61.8 ? 0.4 : 0.0))
+
+rsi_val = ta.rsi(close, rsi_len)
+strong_trend_regime = chop_val < 50.0
+
+exh_score_long = strong_trend_regime ? (rsi_val > 50.0 ? 1.0 : (rsi_val > 45.0 ? 0.7 : 0.4)) : (rsi_val > 40.0 and rsi_val < 70.0 ? 1.0 : (rsi_val > 35.0 and rsi_val < 75.0 ? 0.7 : (rsi_val > 30.0 and rsi_val < 80.0 ? 0.4 : 0.0)))
+exh_score_short = strong_trend_regime ? (rsi_val < 50.0 ? 1.0 : (rsi_val < 55.0 ? 0.7 : 0.4)) : (rsi_val < 60.0 and rsi_val > 30.0 ? 1.0 : (rsi_val < 65.0 and rsi_val > 25.0 ? 0.7 : (rsi_val < 70.0 and rsi_val > 20.0 ? 0.4 : 0.0)))
+
+confluence_long  = struct_score_long * 0.30 + mom_score_long * 0.25 + vol_score * 0.20 + exh_score_long * 0.15 + chop_score * 0.10
+confluence_short = struct_score_short * 0.30 + mom_score_short * 0.25 + vol_score * 0.20 + exh_score_short * 0.15 + chop_score * 0.10
+
+// ==============================================================================
+// 8. SMART MOMENTUM IGNITION (GATILHO DE RUPTURA EXPANSIVA)
+// ==============================================================================
+c_range = high - low
+vol_exp = volume > vol_sma * ign_vol_mult
+
+ignition_long  = use_ign and chop_val < ign_chop_max and vol_exp and c_range > atr_val * ign_atr_mult and close > open and (close - low) > c_range * 0.6 and close > baseline and confluence_long >= 0.5
+ignition_short = use_ign and chop_val < ign_chop_max and vol_exp and c_range > atr_val * ign_atr_mult and close < open and (high - close) > c_range * 0.6 and close < baseline and confluence_short >= 0.5
+
+// ==============================================================================
+// 9. REGRAS DE ENTRADA
+// ==============================================================================
+entry_cond_long  = mtf_ok_long  and (((close > upper_entry and is_uptrend and close > open) and confluence_long >= min_conf) or (ignition_long and norm_slope > 0.05))
+entry_cond_short = mtf_ok_short and (((close < lower_entry and is_downtrend and close < open) and confluence_short >= min_conf) or (ignition_short and norm_slope < -0.05))
+
+// ==============================================================================
+// 10. GESTÃO DE POSIÇÃO (PARCIAL 50% + BREAKEVEN + TRAILING STOP SUPERTREND)
+// ==============================================================================
+var float active_long_stop = na
+var float active_short_stop = na
+var float entry_price_locked = na
+var bool partial_taken = false
+
+in_long  = strategy.position_size > 0
+in_short = strategy.position_size < 0
+
+if in_long
+    if na(entry_price_locked)
+        entry_price_locked := strategy.position_avg_price
+    
+    // Parcial em +2.50%
+    if not partial_taken and high >= entry_price_locked * (1.0 + tp_partial_p / 100.0)
+        partial_taken := true
+    
+    // Stop Loss Supertrend com Ratchet
+    current_st_stop = st_dir == 1 ? st_line : entry_price_locked
+    active_long_stop := na(active_long_stop) ? current_st_stop : math.max(active_long_stop, current_st_stop)
+    
+    // Se parcial foi atingida, trava o Breakeven Dinâmico (+0.25%)
+    if partial_taken
+        be_floor = entry_price_locked * (1.0 + be_lock_pct / 100.0)
+        active_long_stop := math.max(active_long_stop, be_floor)
+
+else if in_short
+    if na(entry_price_locked)
+        entry_price_locked := strategy.position_avg_price
+        
+    // Parcial em +2.50% (preço cai 2.50%)
+    if not partial_taken and low <= entry_price_locked * (1.0 - tp_partial_p / 100.0)
+        partial_taken := true
+        
+    // Stop Loss Supertrend com Ratchet
+    current_st_stop = st_dir == -1 ? st_line : entry_price_locked
+    active_short_stop := na(active_short_stop) ? current_st_stop : math.min(active_short_stop, current_st_stop)
+    
+    // Se parcial foi atingida, trava o Breakeven Dinâmico (+0.25%)
+    if partial_taken
+        be_ceiling = entry_price_locked * (1.0 - be_lock_pct / 100.0)
+        active_short_stop := math.min(active_short_stop, be_ceiling)
+
+else
+    active_long_stop := na
+    active_short_stop := na
+    entry_price_locked := na
+    partial_taken := false
+
+// ==============================================================================
+// 11. EXECUÇÃO DE ORDENS
+// ==============================================================================
+if entry_cond_long and not in_long and barstate.isconfirmed
+    init_stop = st_dir == 1 ? st_line : (close - atr_val * atr_mult)
+    init_stop := math.min(init_stop, close * 0.985)
+    active_long_stop := init_stop
+    entry_price_locked := close
+    partial_taken := false
+    
+    qty_pct = 100.0 * size_factor_long
+    strategy.entry("Long", strategy.long, qty=strategy.equity * (qty_pct / 100.0) / close, comment="ENTER LONG")
+
+if entry_cond_short and not in_short and barstate.isconfirmed
+    init_stop = st_dir == -1 ? st_line : (close + atr_val * atr_mult)
+    init_stop := math.max(init_stop, close * 1.015)
+    active_short_stop := init_stop
+    entry_price_locked := close
+    partial_taken := false
+    
+    qty_pct = 100.0 * size_factor_short
+    strategy.entry("Short", strategy.short, qty=strategy.equity * (qty_pct / 100.0) / close, comment="ENTER SHORT")
+
+// Ordens de Saída (Parcial 50% e Trailing Stop / Breakeven)
+if in_long
+    tp_price = entry_price_locked * (1.0 + tp_partial_p / 100.0)
+    strategy.exit("TP Parcial Long", "Long", qty_percent=tp_ratio, limit=tp_price, comment="TP 50% (+2.5%)")
+    strategy.exit("Trailing/BE Long", "Long", stop=active_long_stop, comment="STOP / BE")
+
+if in_short
+    tp_price = entry_price_locked * (1.0 - tp_partial_p / 100.0)
+    strategy.exit("TP Parcial Short", "Short", qty_percent=tp_ratio, limit=tp_price, comment="TP 50% (+2.5%)")
+    strategy.exit("Trailing/BE Short", "Short", stop=active_short_stop, comment="STOP / BE")
+
+// ==============================================================================
+// 12. PLOTS GRÁFICOS (OVERLAYS E BANDAS)
+// ==============================================================================
+p_base  = plot(baseline, "OLS 100 Baseline", color=color.new(#ffd60a, 0), linewidth=2)
+p_upper = plot(upper_entry, "Banda Superior (Long)", color=color.new(#30d158, 0), linewidth=1)
+p_lower = plot(lower_entry, "Banda Inferior (Short)", color=color.new(#ff453a, 0), linewidth=1)
+fill(p_upper, p_lower, color=color.new(#ffd60a, 95), title="Canal Adaptativo")
+
+plot(in_long ? active_long_stop : na, "Stop Long Ativo", color=color.new(#ff9f0a, 0), linewidth=2, style=plot.style_linebr)
+plot(in_short ? active_short_stop : na, "Stop Short Ativo", color=color.new(#ff9f0a, 0), linewidth=2, style=plot.style_linebr)
+
+plotshape(entry_cond_long and not in_long, title="Sinal Long", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small, text="LONG")
+plotshape(entry_cond_short and not in_short, title="Sinal Short", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small, text="SHORT")
+plotshape(ignition_long, title="Ignition Long", location=location.belowbar, color=color.yellow, style=shape.diamond, size=size.tiny)
+plotshape(ignition_short, title="Ignition Short", location=location.abovebar, color=color.yellow, style=shape.diamond, size=size.tiny)
+
+// ==============================================================================
+// 13. HUD TABLE — TELEMETRIA PROP DESK (ESPELHO DA DASHBOARD DO BOT)
+// ==============================================================================
+var table hud = table.new(position.top_right, 2, 9, bgcolor=color.new(#101826, 15), border_color=color.new(#2c384d, 50), border_width=1)
+
+f_bias_str(b) => b == 1 ? "ALTA (BULL)" : (b == -1 ? "BAIXA (BEAR)" : "NEUTRO")
+f_bias_col(b) => b == 1 ? color.green : (b == -1 ? color.red : color.gray)
+
+if barstate.islast and show_hud
+    table.cell(hud, 0, 0, "MERABOT CASCATA", bgcolor=color.new(#ffd60a, 20), text_color=color.yellow, text_size=size.small)
+    table.cell(hud, 1, 0, "STATUS V5", bgcolor=color.new(#ffd60a, 20), text_color=color.yellow, text_size=size.small)
+    
+    table.cell(hud, 0, 1, "Macro D1 (Veto)", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 1, f_bias_str(d_bias), text_color=f_bias_col(d_bias), text_size=size.small)
+    
+    table.cell(hud, 0, 2, "Contexto 4h", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 2, f_bias_str(h_bias), text_color=f_bias_col(h_bias), text_size=size.small)
+    
+    table.cell(hud, 0, 3, "Choppiness (15m)", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 3, str.tostring(chop_val, "#.0") + (chop_val < 50.0 ? " (Tendência)" : " (Lateral)"), text_color=chop_val < 50.0 ? color.green : color.orange, text_size=size.small)
+    
+    table.cell(hud, 0, 4, "Slope Exec (OLS/ATR)", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 4, str.tostring(norm_slope, "#.000"), text_color=norm_slope > 0 ? color.green : color.red, text_size=size.small)
+    
+    table.cell(hud, 0, 5, "Confluência Long", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 5, str.tostring(confluence_long, "#.00") + (confluence_long >= min_conf ? " [OK]" : ""), text_color=confluence_long >= min_conf ? color.green : color.gray, text_size=size.small)
+    
+    table.cell(hud, 0, 6, "Confluência Short", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 6, str.tostring(confluence_short, "#.00") + (confluence_short >= min_conf ? " [OK]" : ""), text_color=confluence_short >= min_conf ? color.red : color.gray, text_size=size.small)
+    
+    table.cell(hud, 0, 7, "Smart Ignition", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 7, ignition_long ? "IGNITION LONG" : (ignition_short ? "IGNITION SHORT" : (chop_val > 58.0 ? "Travado" : "Monitorando")), text_color=ignition_long ? color.green : (ignition_short ? color.red : color.gray), text_size=size.small)
+    
+    table.cell(hud, 0, 8, "Gestão de Saída", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 8, "TP 50% (+2.5%) / BE (+0.25%)", text_color=color.cyan, text_size=size.small)
