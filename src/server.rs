@@ -138,8 +138,10 @@ async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
         exec.position.current_price
     } else if let Some(ref candle) = exec.last_candle {
         candle.close
+    } else if strat.last_indicators().cascade.baseline > 0.0 {
+        strat.last_indicators().cascade.baseline
     } else {
-        strat.last_indicators().rolling_high_96.min(strat.last_indicators().rolling_low_96)
+        100.0
     };
 
     let order_feasibility = risk.evaluate_order_feasibility(
@@ -1545,12 +1547,14 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
             <div class="brand-area">
                 <div class="brand-title">
                     <span class="live-dot"></span>
-                    <span>Binance Terminal Pro</span>
+                    <span>MERABOT <span style="color:#ffd60a; font-weight:800; font-size:0.90rem; margin-left:6px; letter-spacing:0.04em;">CASCATA TURBO MTF</span></span>
                 </div>
                 <div class="badges-group">
                     <button id="symbolTag" class="badge badge-symbol badge-btn" onclick="openLeverageModal()" title="Toque para alterar símbolo ou alavancagem">SOLUSDT 15m</button>
                     <span id="modeTag" class="badge badge-mode">PAPER</span>
                     <span id="statusTag" class="badge badge-status status-running">RUNNING</span>
+                    <span class="badge" style="background: rgba(48, 209, 88, 0.14); color: #30d158; border: 1px solid rgba(48, 209, 88, 0.3); font-weight: 700;" title="Sincronização Ativa dos Filtros Diário D1 e 4 Horas">MTF D1+4H SYNC</span>
+                    <span class="badge" style="background: rgba(100, 210, 255, 0.14); color: var(--cyan); border: 1px solid rgba(100, 210, 255, 0.3); font-weight: 700;" title="Parcial Automática 50% em +2.50% e Breakeven em +0.25%">PARCIAL 50% + BE</span>
                     <button id="btnOpenCascadeModal" class="badge badge-btn" style="background: rgba(255, 214, 10, 0.16); color: #ffd60a; border: 1px solid rgba(255, 214, 10, 0.35); cursor: pointer;" onclick="openCascadeModal()" title="Configurar Parâmetros da Cascata MTF">⚡ Cascata MTF ⚙️</button>
                     <button id="riskTag" class="badge badge-symbol badge-btn" onclick="openRiskModal()" title="Toque para calibrar risco da banca">🛡️ <span id="riskBadgeText">16.0% Risco</span> ✏️</button>
                 </div>
@@ -1634,9 +1638,9 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
                 <!-- Barra Dinamica SL -> Entrada -> TP -->
                 <div class="pos-progress-container">
                     <div class="progress-labels">
-                        <span id="labelSL" class="c-down">SL (3.5%): $0.00</span>
-                        <span id="labelEntry" style="color:#ffffff;">Entrada</span>
-                        <span id="labelTP" class="c-cyan">Saída Donchian 10</span>
+                        <span id="labelSL" class="c-down">SL Supertrend: $0.00</span>
+                        <span id="labelEntry" style="color:#ffffff;">Entrada & BE (+0.25%)</span>
+                        <span id="labelTP" class="c-cyan">Parcial 50% (+2.50%)</span>
                     </div>
                     <div class="progress-bar-bg">
                         <div class="progress-fill" id="posBarFill"></div>
@@ -1653,7 +1657,7 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
                         <strong id="posNotional">$0.00</strong>
                     </div>
                     <div class="detail-item">
-                        <span>Stop Loss (Obrigatório)</span>
+                        <span>Stop Loss (Supertrend)</span>
                         <strong id="posSL" class="c-down">--</strong>
                     </div>
                     <div class="detail-item">
@@ -1673,7 +1677,7 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
                         <strong id="posLiqDist" class="c-up">--</strong>
                     </div>
                     <div class="detail-item">
-                        <span>Take Profit Alvo (+2.5%)</span>
+                        <span>Parcial 50% (+2.50%)</span>
                         <strong id="posTP" class="c-up">--</strong>
                     </div>
                 </div>
@@ -1695,9 +1699,9 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
             <!-- Placeholder Posição Neutra -->
             <div id="posEmptyBox" class="no-pos-box">
                 <div class="radar-scan"></div>
-                <div style="font-size: 0.92rem; font-weight: 600; color: #ffffff;">Radar Breakout 24/7 Ativo</div>
-                <div style="font-size: 0.78rem; color: var(--text-tertiary); max-width: 440px; line-height: 1.45;" id="radarMarketStatus">
-                    Monitorando canal móvel das últimas 24h (96 velas de 15m) + EMA 200 institucional.
+                <div style="font-size: 0.95rem; font-weight: 700; color: #ffd60a; letter-spacing: 0.03em;">Radar Cascata Turbo MTF Ativo</div>
+                <div style="font-size: 0.80rem; color: var(--text-secondary); max-width: 520px; line-height: 1.5; text-align: center;" id="radarMarketStatus">
+                    Sincronizando OLS 100, Bandas Adaptativas e Filtros MTF (D1 + 4h)...
                 </div>
             </div>
         </section>
@@ -1811,69 +1815,71 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
 
         <!-- SPLIT: COCKPIT & LIVE CHART -->
         <section class="content-split">
-            <!-- COCKPIT INDICADORES -->
-            <!-- COCKPIT BREAKOUT 24/7 (EXCLUSIVO DA NOVA ESTRATÉGIA) -->
-            <div class="section-card">
+            <!-- COCKPIT CASCATA TURBO MTF (NOVO MOTOR OFICIAL) -->
+            <div class="section-card" style="border: 1px solid rgba(255, 214, 10, 0.25);">
                 <div class="card-header">
-                    <div class="card-title">⚙️ Cockpit Breakout 24/7 (Rolling 96 Velas • 24 Horas)</div>
-                    <span id="cbTag" class="badge badge-live">RADAR 24/7 ATIVO</span>
+                    <div class="card-title">⚡ Cockpit Cascata Turbo MTF (OLS 100 • Bandas Adaptativas)</div>
+                    <span id="cbTag" class="badge badge-live" style="background: rgba(255, 214, 10, 0.16); color: #ffd60a; border: 1px solid rgba(255, 214, 10, 0.35);">CASCATA MTF ATIVA</span>
                 </div>
                 <div class="indicator-list">
                     <div class="ind-item">
                         <div class="ind-name">
-                            <span>⏱️ Janela de Operações (Últimas 24h)</span>
+                            <span>🧭 Alinhamento MTF (Diário D1 & 4H)</span>
                         </div>
-                        <div class="ind-val" style="display: flex; align-items: center; gap: 6px;">
-                            <span id="indRegimeTag" class="badge badge-live" style="font-weight: 700;">RADAR ATIVO</span>
-                            <span id="indRegimePct" style="font-size: 0.85rem; font-weight: 600;">0 / 3 trades</span>
+                        <div class="ind-val" style="display: flex; align-items: center; gap: 8px;">
+                            <span id="cockpitD1Badge" class="badge badge-live" style="font-weight: 700;">D1: NEUTRO</span>
+                            <span id="cockpitH4Badge" class="badge badge-mode" style="font-weight: 700;">4H: NEUTRO</span>
                         </div>
                     </div>
                     <div class="ind-item">
                         <div class="ind-name">
-                            <span>📊 Range Móvel 24 Horas (96 Velas 15m)</span>
+                            <span>📈 OLS 100 & Bandas Adaptativas (15m)</span>
                         </div>
                         <div class="ind-val">
-                            <span id="indDonchianHigh" class="c-cyan">High: $0.00</span>
+                            <span id="cockpitUpper" class="c-up" title="Banda Superior de Rompimento Long">Long: $0.00</span>
                             <span style="color: var(--text-tertiary); margin: 0 4px;">|</span>
-                            <span id="indDonchianLow" class="c-amber">Low: $0.00</span>
-                            <span id="indRangeAmp" style="color: var(--text-tertiary); margin-left: 6px; font-size: 0.76rem;">(0.0%)</span>
-                        </div>
-                    </div>
-                    <div class="ind-item">
-                        <div class="ind-name">
-                            <span>🎯 Metas Fixas da Operação</span>
-                        </div>
-                        <div class="ind-val">
-                            <span id="indDonchianExitHigh" class="c-up">TP: +2.5%</span>
+                            <span id="cockpitBaseline" style="color: #ffd60a;" title="Linha de Regressão Linear OLS 100">OLS: $0.00</span>
                             <span style="color: var(--text-tertiary); margin: 0 4px;">|</span>
-                            <span id="indDonchianExitLow" class="c-down">SL: 1.2%</span>
+                            <span id="cockpitLower" class="c-down" title="Banda Inferior de Rompimento Short">Short: $0.00</span>
                         </div>
                     </div>
                     <div class="ind-item">
                         <div class="ind-name">
-                            <span>🧭 Filtro de Tendência (EMA 200)</span>
+                            <span>🎯 Metas da Posição (Cascata Turbo)</span>
                         </div>
                         <div class="ind-val">
-                            <span id="indEma200Val">$0.00</span>
-                            <span id="indEma200Badge" class="badge badge-live" style="margin-left: 6px;">ALTA</span>
+                            <span class="c-cyan" style="font-weight: 700;">Parcial 50% (+2.50%)</span>
+                            <span style="color: var(--text-tertiary); margin: 0 4px;">|</span>
+                            <span class="c-up" style="font-weight: 700;">Breakeven (+0.25%)</span>
+                            <span style="color: var(--text-tertiary); margin: 0 4px;">|</span>
+                            <span class="c-amber" style="font-size: 0.78rem;">Trailing Supertrend</span>
                         </div>
                     </div>
                     <div class="ind-item">
                         <div class="ind-name">
-                            <span>⚡ Gatilho Operacional</span>
+                            <span>🌊 Choppiness Index (Regime 15m)</span>
                         </div>
                         <div class="ind-val">
-                            <span class="c-cyan">Fechamento de Vela 15m (Zero Repaint)</span>
+                            <span id="cockpitChopVal" style="font-family: var(--font-mono); font-weight: 700;">0.0</span>
+                            <span id="cockpitChopBadge" class="badge badge-live" style="margin-left: 6px;">CALCULANDO</span>
                         </div>
                     </div>
-                    <div class="ind-item" style="cursor: pointer;" onclick="openRiskModal()" title="Toque para alterar Risco e Piso Nocional">
+                    <div class="ind-item">
+                        <div class="ind-name">
+                            <span>🚀 Smart Ignition & Confluência</span>
+                        </div>
+                        <div class="ind-val">
+                            <span id="cockpitIgnitionStatus" class="c-cyan" style="font-weight: 600;">Monitorando Expansão de Volatilidade</span>
+                        </div>
+                    </div>
+                    <div class="ind-item" style="cursor: pointer;" onclick="openRiskModal()" title="Toque para calibrar risco por trade">
                         <div class="ind-name">
                             <span>🛡️ Risco por Trade / Alavancagem</span>
                         </div>
                         <div class="ind-val">
                             <span id="indRiskVal" class="c-amber">16.0%</span>
                             <span style="color: var(--text-tertiary); margin: 0 4px;">/</span>
-                            <span class="c-cyan">5x ISOLATED</span>
+                            <span id="cockpitLevVal" class="c-cyan">5x ISOLATED</span>
                             <span style="font-size: 0.72rem; margin-left: 4px;">✏️</span>
                         </div>
                     </div>
@@ -2588,85 +2594,107 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
                         slTag.textContent = 'STOP LOSS ATIVO (AUTO-PROTEÇÃO)';
                         slTag.className = 'badge badge-live';
                     } else {
-                        slTag.textContent = 'STOP LOSS: PRONTO PARA PRÓXIMA ENTRADA (1.2%)';
+                        slTag.textContent = 'STOP SUPERTREND: PRONTO PARA PRÓXIMA ENTRADA';
                         slTag.className = 'badge badge-mode';
                     }
                 }
 
                 currentSymbol = data.symbol;
 
-                // 24/7 Rolling Breakout Status & Indicators
-                const regTag = document.getElementById('indRegimeTag');
-                const regPct = document.getElementById('indRegimePct');
+                // Cascata Turbo MTF Status & Indicators
+                const c = (data.indicators && data.indicators.cascade) ? data.indicators.cascade : null;
                 const radarRegText = document.getElementById('radarMarketStatus');
 
-                const trades24h = data.indicators.trades_last_24h ?? data.indicators.session_trades_today ?? 0;
-                const maxTrades = data.indicators.max_trades_24h ?? data.indicators.session_max_trades ?? 3;
-                const rHigh96 = data.indicators.rolling_high_96 || data.indicators.session_range_high || 0;
-                const rLow96 = data.indicators.rolling_low_96 || data.indicators.session_range_low || 0;
-                const rAmpPct = data.indicators.rolling_range_pct || (rLow96 > 0 ? ((rHigh96 - rLow96) / rLow96 * 100) : 0);
-                const ema200Val = data.indicators.ema_200 || 0;
-                const isBullish = data.indicators.trend_filter_bullish;
-                const cooldownMins = data.indicators.next_slot_cooldown_mins;
+                if (c) {
+                    // Cockpit D1 & 4H
+                    const d1El = document.getElementById('cockpitD1Badge');
+                    if (d1El) {
+                        const isBull = c.d_bias === 1 || c.d_bias === 'ALTA';
+                        const isBear = c.d_bias === -1 || c.d_bias === 'BAIXA';
+                        d1El.textContent = 'D1: ' + (isBull ? 'ALTA (BULL)' : (isBear ? 'BAIXA (BEAR)' : 'NEUTRO'));
+                        d1El.className = 'badge ' + (isBull ? 'badge-live' : (isBear ? 'badge-status status-stopped' : 'badge-mode'));
+                        d1El.style.background = isBull ? 'rgba(48, 209, 88, 0.18)' : (isBear ? 'rgba(255, 69, 58, 0.18)' : 'rgba(255, 255, 255, 0.08)');
+                        d1El.style.color = isBull ? 'var(--green)' : (isBear ? 'var(--red)' : 'var(--text-tertiary)');
+                    }
 
-                if (regTag) {
-                    if (trades24h >= maxTrades) {
-                        regTag.textContent = 'LIMITE 24H (3/3)';
-                        regTag.className = 'badge badge-status status-stopped';
-                        regTag.style.background = 'rgba(255, 69, 58, 0.18)';
-                        regTag.style.color = 'var(--red)';
-                    } else {
-                        regTag.textContent = 'RADAR 24/7 ATIVO';
-                        regTag.className = 'badge badge-live';
-                        regTag.style.background = 'rgba(48, 209, 88, 0.18)';
-                        regTag.style.color = 'var(--green)';
+                    const h4El = document.getElementById('cockpitH4Badge');
+                    if (h4El) {
+                        const isBull = c.h_bias === 1 || c.h_bias === 'ALTA';
+                        const isBear = c.h_bias === -1 || c.h_bias === 'BAIXA';
+                        h4El.textContent = '4H: ' + (isBull ? 'ALTA' : (isBear ? 'BAIXA' : 'NEUTRO'));
+                        h4El.className = 'badge ' + (isBull ? 'badge-live' : (isBear ? 'badge-status status-stopped' : 'badge-mode'));
+                        h4El.style.background = isBull ? 'rgba(48, 209, 88, 0.18)' : (isBear ? 'rgba(255, 69, 58, 0.18)' : 'rgba(255, 255, 255, 0.08)');
+                        h4El.style.color = isBull ? 'var(--green)' : (isBear ? 'var(--red)' : 'var(--text-tertiary)');
+                    }
+
+                    // Cockpit Adaptive Bands
+                    const cuEl = document.getElementById('cockpitUpper');
+                    if (cuEl && c.upper_entry > 0) cuEl.textContent = 'Long: $' + c.upper_entry.toFixed(2);
+                    const cbEl = document.getElementById('cockpitBaseline');
+                    if (cbEl && c.baseline > 0) cbEl.textContent = 'OLS: $' + c.baseline.toFixed(2);
+                    const clEl = document.getElementById('cockpitLower');
+                    if (clEl && c.lower_entry > 0) clEl.textContent = 'Short: $' + c.lower_entry.toFixed(2);
+
+                    // Choppiness Index
+                    const chopV = document.getElementById('cockpitChopVal');
+                    const chopB = document.getElementById('cockpitChopBadge');
+                    if (chopV) chopV.textContent = (c.chop_val || 0).toFixed(1);
+                    if (chopB) {
+                        if (c.chop_val < 46.0) {
+                            chopB.textContent = 'TENDÊNCIA FORTE';
+                            chopB.className = 'badge badge-live';
+                            chopB.style.background = 'rgba(48, 209, 88, 0.18)';
+                            chopB.style.color = 'var(--green)';
+                        } else if (c.chop_val > 54.0) {
+                            chopB.textContent = 'CONSOLIDAÇÃO / LATERAL';
+                            chopB.className = 'badge badge-mode';
+                            chopB.style.background = 'rgba(255, 159, 10, 0.18)';
+                            chopB.style.color = 'var(--amber)';
+                        } else {
+                            chopB.textContent = 'TRANSIÇÃO / MISTO';
+                            chopB.className = 'badge badge-mode';
+                            chopB.style.background = 'rgba(100, 210, 255, 0.18)';
+                            chopB.style.color = 'var(--cyan)';
+                        }
+                    }
+
+                    // Smart Ignition
+                    const ignEl = document.getElementById('cockpitIgnitionStatus');
+                    if (ignEl) {
+                        if (c.ignition_long) {
+                            ignEl.innerHTML = '<span class="c-up" style="font-weight:800;">⚡ IGNITION LONG DETECTADO!</span>';
+                        } else if (c.ignition_short) {
+                            ignEl.innerHTML = '<span class="c-down" style="font-weight:800;">⚡ IGNITION SHORT DETECTADO!</span>';
+                        } else if (c.chop_val > 58.0) {
+                            ignEl.innerHTML = '<span class="c-amber">Smart Ignition: Travado por Alta Congestão (Chop > 58)</span>';
+                        } else {
+                            ignEl.innerHTML = '<span class="c-cyan">Smart Ignition: Monitorando Rompimento OLS 100</span>';
+                        }
+                    }
+
+                    // Radar Market Status Text
+                    if (radarRegText) {
+                        const d1Str = (c.d_bias === 1 || c.d_bias === 'ALTA') ? '<span class="c-up" style="font-weight:700;">ALTA (BULL)</span>' : (c.d_bias === -1 || c.d_bias === 'BAIXA') ? '<span class="c-down" style="font-weight:700;">BAIXA (BEAR)</span>' : '<span style="color: var(--text-tertiary);">NEUTRO</span>';
+                        const h4Str = (c.h_bias === 1 || c.h_bias === 'ALTA') ? '<span class="c-up" style="font-weight:700;">ALTA</span>' : (c.h_bias === -1 || c.h_bias === 'BAIXA') ? '<span class="c-down" style="font-weight:700;">BAIXA</span>' : '<span style="color: var(--text-tertiary);">NEUTRO</span>';
+                        const chopDesc = c.chop_val < 46.0 ? '<span class="c-up">Tendência Forte (' + c.chop_val.toFixed(1) + ')</span>' : (c.chop_val > 54.0 ? '<span class="c-amber">Consolidação (' + c.chop_val.toFixed(1) + ')</span>' : '<span class="c-cyan">Transição (' + c.chop_val.toFixed(1) + ')</span>');
+                        radarRegText.innerHTML = `Macro D1: ${d1Str} | Contexto 4h: ${h4Str} | Choppiness: ${chopDesc}<br>Bandas Adaptativas: Long <strong class="c-up">$${(c.upper_entry || 0).toFixed(2)}</strong> | OLS <strong style="color:#ffd60a;">$${(c.baseline || 0).toFixed(2)}</strong> | Short <strong class="c-down">$${(c.lower_entry || 0).toFixed(2)}</strong>`;
                     }
                 }
 
-                if (regPct) {
-                    if (trades24h >= maxTrades && cooldownMins) {
-                        regPct.textContent = `${trades24h} / ${maxTrades} (libera em ~${cooldownMins}m)`;
-                        regPct.className = 'c-amber';
-                    } else {
-                        regPct.textContent = `${trades24h} / ${maxTrades} trades em 24h`;
-                        regPct.className = trades24h >= maxTrades ? 'c-amber' : 'c-up';
-                    }
-                }
-
-                if (radarRegText) {
-                    radarRegText.innerHTML = `Range 24h: High <strong class="c-cyan">$${rHigh96.toFixed(2)}</strong> | Low <strong class="c-amber">$${rLow96.toFixed(2)}</strong> (Amp: ${rAmpPct.toFixed(1)}%)<br>EMA 200: <strong class="${isBullish ? 'c-up' : 'c-down'}">$${ema200Val.toFixed(2)} (${isBullish ? 'ALTA' : 'BAIXA'})</strong> | Operações 24h: <strong>${trades24h}/${maxTrades}</strong>`;
-                }
-
-                document.getElementById('indDonchianHigh').textContent = 'High: $' + rHigh96.toFixed(2);
-                document.getElementById('indDonchianLow').textContent = 'Low: $' + rLow96.toFixed(2);
-                const ampElem = document.getElementById('indRangeAmp');
-                if (ampElem) {
-                    ampElem.textContent = `(${rAmpPct.toFixed(1)}% amp)`;
-                }
-                document.getElementById('indDonchianExitHigh').textContent = 'TP: +2.5%';
-                document.getElementById('indDonchianExitLow').textContent = 'SL: 1.2%';
-
-                // EMA 200 Trend Filter
-                const emaValElem = document.getElementById('indEma200Val');
-                const emaBadgeElem = document.getElementById('indEma200Badge');
-                if (emaValElem) {
-                    emaValElem.textContent = '$' + ema200Val.toFixed(2);
-                }
-                if (emaBadgeElem) {
-                    emaBadgeElem.textContent = isBullish ? 'ALTA (Acima EMA)' : 'BAIXA (Abaixo EMA)';
-                    emaBadgeElem.className = 'badge ' + (isBullish ? 'badge-live' : 'badge-status status-stopped');
+                const levElem = document.getElementById('cockpitLevVal');
+                if (levElem) {
+                    levElem.textContent = (data.position.leverage || 5) + 'x ISOLATED';
                 }
 
                 const cbTag = document.getElementById('cbTag');
-                if (data.circuit_breaker_active) {
-                    cbTag.textContent = 'CIRCUIT BREAKER: BLOQUEADO';
-                    cbTag.className = 'badge badge-status status-stopped';
-                } else if (trades24h >= maxTrades) {
-                    cbTag.textContent = 'LIMITE 24H ATINGIDO';
-                    cbTag.className = 'badge badge-status status-stopped';
-                } else {
-                    cbTag.textContent = 'RADAR 24/7 ATIVO';
-                    cbTag.className = 'badge badge-live';
+                if (cbTag) {
+                    if (data.circuit_breaker_active) {
+                        cbTag.textContent = 'CIRCUIT BREAKER: BLOQUEADO';
+                        cbTag.className = 'badge badge-status status-stopped';
+                    } else {
+                        cbTag.textContent = 'CASCATA MTF ATIVA';
+                        cbTag.className = 'badge badge-live';
+                    }
                 }
 
                 // Risk & Notional display
@@ -3149,14 +3177,18 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
                     const c = data.cascade;
                     const macroEl = document.getElementById('hudMacroBias');
                     if (macroEl) {
-                        macroEl.textContent = c.d_bias;
-                        macroEl.className = 'cascade-hud-val ' + (c.d_bias === 'ALTA' ? 'c-up' : (c.d_bias === 'BAIXA' ? 'c-down' : ''));
+                        const isBull = c.d_bias === 1 || c.d_bias === 'ALTA';
+                        const isBear = c.d_bias === -1 || c.d_bias === 'BAIXA';
+                        macroEl.textContent = isBull ? 'ALTA (BULL)' : (isBear ? 'BAIXA (BEAR)' : 'NEUTRO');
+                        macroEl.className = 'cascade-hud-val ' + (isBull ? 'c-up' : (isBear ? 'c-down' : ''));
                     }
 
                     const ctxEl = document.getElementById('hudCtxBias');
                     if (ctxEl) {
-                        ctxEl.textContent = c.h_bias;
-                        ctxEl.className = 'cascade-hud-val ' + (c.h_bias === 'ALTA' ? 'c-up' : (c.h_bias === 'BAIXA' ? 'c-down' : ''));
+                        const isBull = c.h_bias === 1 || c.h_bias === 'ALTA';
+                        const isBear = c.h_bias === -1 || c.h_bias === 'BAIXA';
+                        ctxEl.textContent = isBull ? 'ALTA' : (isBear ? 'BAIXA' : 'NEUTRO');
+                        ctxEl.className = 'cascade-hud-val ' + (isBull ? 'c-up' : (isBear ? 'c-down' : ''));
                     }
 
                     const convLEl = document.getElementById('hudConvLong');
