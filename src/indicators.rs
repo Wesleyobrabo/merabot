@@ -287,7 +287,154 @@ impl VolumeSma {
     }
 }
 
+/// Preço Médio Ponderado por Volume ancorado por sessão UTC (00:00 UTC) com bandas de desvio padrão
+#[derive(Debug, Clone)]
+pub struct SessionVwap {
+    pub cum_pv: f64,
+    pub cum_vol: f64,
+    pub cum_pv2: f64,
+    pub vwap: Option<f64>,
+    pub std_dev: Option<f64>,
+    pub last_day: Option<u32>,
+}
 
+impl SessionVwap {
+    pub fn new() -> Self {
+        Self {
+            cum_pv: 0.0,
+            cum_vol: 0.0,
+            cum_pv2: 0.0,
+            vwap: None,
+            std_dev: None,
+            last_day: None,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.cum_pv = 0.0;
+        self.cum_vol = 0.0;
+        self.cum_pv2 = 0.0;
+        self.vwap = None;
+        self.std_dev = None;
+    }
+
+    pub fn update(&mut self, candle: &Candle) -> (f64, f64, f64) {
+        let day = (candle.open_time / 86_400_000) as u32;
+        if let Some(last) = self.last_day {
+            if day != last {
+                self.reset();
+            }
+        }
+        self.last_day = Some(day);
+
+        let typical = (candle.high + candle.low + candle.close) / 3.0;
+        let vol = candle.volume.max(0.0001);
+
+        self.cum_pv += typical * vol;
+        self.cum_vol += vol;
+        self.cum_pv2 += typical * typical * vol;
+
+        let vwap = self.cum_pv / self.cum_vol;
+        let variance = (self.cum_pv2 / self.cum_vol - vwap * vwap).max(0.0);
+        let std_dev = variance.sqrt();
+
+        self.vwap = Some(vwap);
+        self.std_dev = Some(std_dev);
+
+        let upper = vwap + 2.0 * std_dev;
+        let lower = vwap - 2.0 * std_dev;
+
+        (vwap, upper, lower)
+    }
+
+    pub fn value(&self) -> Option<f64> {
+        self.vwap
+    }
+}
+
+/// Estimador de Regressão Não-Paramétrica de Nadaraya-Watson (Kernel Gaussiano) com Envelope MAE
+#[derive(Debug, Clone)]
+pub struct NadarayaWatson {
+    pub bandwidth: f64,
+    pub mult: f64,
+    pub lookback: usize,
+    buffer: Vec<f64>,
+    weights: Vec<f64>,
+}
+
+impl NadarayaWatson {
+    pub fn new(bandwidth: f64, mult: f64, lookback: usize) -> Self {
+        let mut weights = Vec::with_capacity(lookback);
+        let two_h2 = 2.0 * bandwidth * bandwidth;
+        for i in 0..lookback {
+            let d = i as f64;
+            let w = (-(d * d) / two_h2).exp();
+            weights.push(w);
+        }
+
+        Self {
+            bandwidth,
+            mult,
+            lookback,
+            buffer: Vec::with_capacity(lookback + 50),
+            weights,
+        }
+    }
+
+    pub fn update(&mut self, close: f64) -> (f64, f64, f64, f64) {
+        self.buffer.push(close);
+        if self.buffer.len() > self.lookback + 20 {
+            self.buffer.drain(0..self.buffer.len() - self.lookback);
+        }
+
+        let n = self.buffer.len();
+        let use_len = n.min(self.lookback);
+        let slice = &self.buffer[n - use_len..];
+
+        let mut sum_w = 0.0;
+        let mut sum_v = 0.0;
+
+        for (i, &price) in slice.iter().rev().enumerate() {
+            let w = self.weights[i];
+            sum_w += w;
+            sum_v += price * w;
+        }
+
+        let central = if sum_w > 0.0 { sum_v / sum_w } else { close };
+
+        let mut sum_mae = 0.0;
+        for (i, &price) in slice.iter().rev().enumerate() {
+            let w = self.weights[i];
+            sum_mae += (price - central).abs() * w;
+        }
+        let dev = if sum_w > 0.0 { (sum_mae / sum_w) * self.mult } else { 0.0 };
+
+        let upper = central + dev;
+        let lower = central - dev;
+
+        let prev_central = if n >= 2 {
+            let prev_slice = &self.buffer[n - use_len..n - 1];
+            let mut pw = 0.0;
+            let mut pv = 0.0;
+            for (i, &price) in prev_slice.iter().rev().enumerate() {
+                let w = self.weights[i];
+                pw += w;
+                pv += price * w;
+            }
+            if pw > 0.0 { pv / pw } else { central }
+        } else {
+            central
+        };
+
+        let slope_pct = if prev_central > 0.0 {
+            ((central - prev_central) / prev_central) * 100.0
+        } else {
+            0.0
+        };
+
+        (central, upper, lower, slope_pct)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ChoppinessIndex {
@@ -1307,3 +1454,246 @@ impl CascadeEngine {
         (baselines, uppers, lowers, stops)
     }
 }
+
+/// MERA Kinetic Tensor (MKT) - Motor Proprietário de Inércia Direcional e Cancelamento de Whipsaw
+/// Desenvolvido do zero com base na geometria de trajetória fractal, fluxo de volume assimétrico e integral de VWAP.
+#[derive(Debug, Clone)]
+pub struct MeraKineticTensor {
+    lookback: usize,
+    history: Vec<(f64, f64, f64, f64, f64, f64)>, // (open, high, low, close, volume, vwap)
+}
+
+impl MeraKineticTensor {
+    pub fn new(lookback: usize) -> Self {
+        Self {
+            lookback,
+            history: Vec::with_capacity(lookback + 20),
+        }
+    }
+
+    pub fn update(&mut self, candle: &Candle, vwap: f64) -> MeraKineticOutput {
+        self.history.push((candle.open, candle.high, candle.low, candle.close, candle.volume, vwap));
+        if self.history.len() > self.lookback + 20 {
+            self.history.drain(0..self.history.len() - self.lookback);
+        }
+
+        let n = self.history.len();
+        if n < 12 {
+            return MeraKineticOutput {
+                tensor: 0.0,
+                tensor_slow: 0.0,
+                tensor_fast: 0.0,
+                vwap_vel: 0.0,
+                size_factor_long: 0.50,
+                size_factor_short: 0.50,
+                is_long_allowed: true,
+                is_short_allowed: true,
+                is_trend_bull: false,
+                is_trend_bear: false,
+                tp_partial_pct: 1.10,
+                tp_final_pct: 2.00,
+                sl_pct: 0.70,
+                is_whipsaw: false,
+                is_volume_climax: false,
+                size_factor: 0.50,
+                is_bull_trend: false,
+                is_bear_trend: false,
+            };
+        }
+
+        // Fast slice (3 horas = 36 velas de 5m)
+        let fast_len = n.min(36);
+        let slice_fast = &self.history[n - fast_len..];
+
+        // Slow slice (24 horas = 288 velas de 5m)
+        let slow_len = n.min(288);
+        let slice_slow = &self.history[n - slow_len..];
+
+        // Macro slice (48 horas = 576 velas de 5m)
+        let macro_len = n.min(576);
+        let slice_macro = &self.history[n - macro_len..];
+        let net_disp_macro = slice_macro.last().unwrap().3 - slice_macro.first().unwrap().3;
+        let _pct_move_macro = net_disp_macro / slice_macro.first().unwrap().3.max(1.0);
+
+        // 1. Coeficiente Fractal Fast (Phi Fast)
+        let net_disp_fast = (slice_fast.last().unwrap().3 - slice_fast.first().unwrap().3).abs();
+        let mut gross_path_fast = 0.0;
+        for i in 1..slice_fast.len() {
+            gross_path_fast += (slice_fast[i].3 - slice_fast[i - 1].3).abs();
+        }
+        let phi_fast = if gross_path_fast > 1e-6 { net_disp_fast / gross_path_fast } else { 0.0 };
+
+        // 2. Volume Ponderado Fast
+        let mut v_plus_fast = 0.0;
+        let mut v_minus_fast = 0.0;
+        for item in slice_fast {
+            let (o, _h, _l, c, vol, _vw) = *item;
+            if c > o {
+                v_plus_fast += vol * (c - o);
+            } else if o > c {
+                v_minus_fast += vol * (o - c);
+            }
+        }
+        let delta_vol_fast = if v_plus_fast + v_minus_fast > 1e-6 {
+            (v_plus_fast - v_minus_fast) / (v_plus_fast + v_minus_fast)
+        } else {
+            0.0
+        };
+
+        // 3. Excursão VWAP Fast
+        let mut sum_vwap_fast = 0.0;
+        for item in slice_fast {
+            let (_o, h, l, c, _vol, vw) = *item;
+            let tr = (h - l).max(1e-4);
+            sum_vwap_fast += (c - vw) / tr;
+        }
+        let i_vwap_fast = sum_vwap_fast / slice_fast.len() as f64;
+        let tensor_fast = phi_fast * (0.50 * delta_vol_fast + 0.50 * i_vwap_fast.tanh());
+
+        // 4. Coeficiente Fractal Slow (24h)
+        let net_disp_slow = slice_slow.last().unwrap().3 - slice_slow.first().unwrap().3;
+        let mut gross_path_slow = 0.0;
+        for i in 1..slice_slow.len() {
+            gross_path_slow += (slice_slow[i].3 - slice_slow[i - 1].3).abs();
+        }
+        let phi_slow = if gross_path_slow > 1e-6 { net_disp_slow.abs() / gross_path_slow } else { 0.0 };
+        let pct_move_slow = net_disp_slow / slice_slow.first().unwrap().3.max(1.0);
+        let tensor_slow = phi_slow * (pct_move_slow * 50.0).clamp(-1.0, 1.0);
+
+        // Tensor Global Unificado
+        let tensor = 0.60 * tensor_fast + 0.40 * tensor_slow;
+
+        // 5. Velocidade VWAP (1 hora / 12 velas)
+        let vwap_vel = if slice_fast.len() >= 12 {
+            let curr_vw = slice_fast.last().unwrap().5;
+            let prev_vw = slice_fast[slice_fast.len() - 12].5;
+            let mut sum_tr = 0.0;
+            for i in (slice_fast.len() - 12)..slice_fast.len() {
+                sum_tr += (slice_fast[i].1 - slice_fast[i].2).max(1e-4);
+            }
+            let avg_tr = (sum_tr / 12.0).max(1e-4);
+            (curr_vw - prev_vw) / avg_tr
+        } else {
+            0.0
+        };
+
+        // 6. Detector de Whipsaw Errático
+        let mut vwap_crosses = 0;
+        let recent_len = slice_fast.len().min(24);
+        let recent_slice = &slice_fast[slice_fast.len() - recent_len..];
+        for i in 1..recent_slice.len() {
+            let prev_diff = recent_slice[i - 1].3 - recent_slice[i - 1].5;
+            let curr_diff = recent_slice[i].3 - recent_slice[i].5;
+            if (prev_diff > 0.0 && curr_diff < 0.0) || (prev_diff < 0.0 && curr_diff > 0.0) {
+                vwap_crosses += 1;
+            }
+        }
+        let is_whipsaw = vwap_crosses >= 5;
+
+        // 7. Clímax de Volume
+        let mut sum_v = 0.0;
+        let v_len = slice_fast.len().min(24);
+        for item in &slice_fast[slice_fast.len() - v_len..] {
+            sum_v += item.4;
+        }
+        let avg_v = sum_v / (v_len as f64).max(1.0);
+        let is_volume_climax = candle.volume >= 2.5 * avg_v && phi_fast >= 0.60;
+
+        // 8. Regimes Bimodais
+        let is_trend_bull = tensor_slow >= 0.04 && tensor_fast >= 0.03 && vwap_vel >= 0.0;
+        let is_trend_bear = tensor_slow <= -0.04 && tensor_fast <= -0.03 && vwap_vel <= 0.0;
+
+        // Permissões Direcionais Estritas MKT 2.0
+        // Long:
+        // - Bloqueia se 24h for negativo além de -0.50% (evita faca caindo na Semana 2)
+        // - Bloqueia se 24h já subiu além de +3.50% (teto de exaustão parabólica anti-FOMO)
+        let is_long_allowed = pct_move_slow >= -0.005
+            && pct_move_slow <= 0.035
+            && tensor_slow >= -0.02
+            && tensor_fast >= -0.04
+            && vwap_vel >= -0.15
+            && !is_whipsaw;
+
+        // Short:
+        // - Bloqueia se 24h for positivo além de +0.50% (evita short em rali explosivo)
+        // - Bloqueia se 24h já caiu além de -3.50% (piso de exaustão de venda)
+        let is_short_allowed = pct_move_slow <= 0.005
+            && pct_move_slow >= -0.035
+            && tensor_slow <= 0.02
+            && tensor_fast <= 0.04
+            && vwap_vel <= 0.15
+            && !is_whipsaw;
+
+        // 9. Dimensionamento Cinético
+        let size_factor_long = if is_trend_bull {
+            1.00
+        } else if tensor_slow <= 0.0 {
+            0.50
+        } else {
+            0.50 + 0.50 * (tensor / 0.08).clamp(0.0, 1.0)
+        };
+
+        let size_factor_short = if is_trend_bear {
+            1.00
+        } else if tensor_slow >= 0.0 {
+            0.50
+        } else {
+            0.50 + 0.50 * ((-tensor) / 0.08).clamp(0.0, 1.0)
+        };
+
+        // 10. Alvos Dinâmicos (Runner para Tendência, Cirúrgico para Mean Reversion)
+        let (tp_partial_pct, tp_final_pct, sl_pct) = if is_trend_bull || is_trend_bear {
+            (1.30, 3.20, 0.70) // Tendência: Surfa onda com TP2 em +3.20%
+        } else {
+            (1.00, 1.80, 0.65) // Mean Reversion: Realização rápida
+        };
+
+        let is_bull_trend = tensor >= 0.04;
+        let is_bear_trend = tensor <= -0.04;
+        let size_factor = if tensor >= 0.0 { size_factor_long } else { size_factor_short };
+
+        MeraKineticOutput {
+            tensor,
+            tensor_slow,
+            tensor_fast,
+            vwap_vel,
+            size_factor_long,
+            size_factor_short,
+            is_long_allowed,
+            is_short_allowed,
+            is_trend_bull,
+            is_trend_bear,
+            tp_partial_pct,
+            tp_final_pct,
+            sl_pct,
+            is_whipsaw,
+            is_volume_climax,
+            size_factor,
+            is_bull_trend,
+            is_bear_trend,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MeraKineticOutput {
+    pub tensor: f64,
+    pub tensor_slow: f64,
+    pub tensor_fast: f64,
+    pub vwap_vel: f64,
+    pub size_factor_long: f64,
+    pub size_factor_short: f64,
+    pub is_long_allowed: bool,
+    pub is_short_allowed: bool,
+    pub is_trend_bull: bool,
+    pub is_trend_bear: bool,
+    pub tp_partial_pct: f64,
+    pub tp_final_pct: f64,
+    pub sl_pct: f64,
+    pub is_whipsaw: bool,
+    pub is_volume_climax: bool,
+    pub size_factor: f64,
+    pub is_bull_trend: bool,
+    pub is_bear_trend: bool,
+}
+

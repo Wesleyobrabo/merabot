@@ -1,9 +1,9 @@
 use crate::auth::{auth_middleware, login_get, login_post, AuthState};
-use crate::config::{AppConfig, CascadeConfig};
+use crate::config::{AppConfig, CascadeConfig, MeraConfig};
 use crate::execution::ExecutionEngine;
 use crate::risk::RiskManager;
 use crate::strategy::PineSupertrendRsiStrategy;
-use crate::types::{AccountState, BotStatus, CascadeTelemetry, IndicatorValues, OrderFeasibility, OrderSide, Position, TradeRecord};
+use crate::types::{AccountState, BotStatus, CascadeTelemetry, IndicatorValues, MeraTelemetry, OrderFeasibility, OrderSide, Position, TradeRecord};
 use axum::{
     extract::State,
     middleware,
@@ -60,7 +60,7 @@ pub struct TogglePullbackPayload {
     pub enabled: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug)]
 pub struct ChartCandlePoint {
     pub time: i64,
     pub open: f64,
@@ -70,13 +70,13 @@ pub struct ChartCandlePoint {
     pub volume: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug)]
 pub struct ChartLinePoint {
     pub time: i64,
     pub value: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug)]
 pub struct ChartMarkerPoint {
     pub time: i64,
     pub position: String,
@@ -94,9 +94,16 @@ pub struct ChartDataResponse {
     pub upper_entry: Vec<ChartLinePoint>,
     pub lower_entry: Vec<ChartLinePoint>,
     pub active_stop: Vec<ChartLinePoint>,
+    pub vwap: Vec<ChartLinePoint>,
+    pub nw_central: Vec<ChartLinePoint>,
+    pub nw_upper: Vec<ChartLinePoint>,
+    pub nw_lower: Vec<ChartLinePoint>,
+    pub active_tp: Vec<ChartLinePoint>,
     pub markers: Vec<ChartMarkerPoint>,
     pub cascade: CascadeTelemetry,
     pub cascade_config: CascadeConfig,
+    pub mera: MeraTelemetry,
+    pub mera_config: MeraConfig,
 }
 
 pub async fn start_server(state: AppState, host: &str, port: u16) {
@@ -111,6 +118,7 @@ pub async fn start_server(state: AppState, host: &str, port: u16) {
         .route("/api/action/set_risk_params", post(action_set_risk_params))
         .route("/api/action/toggle_pullback", post(action_toggle_pullback))
         .route("/api/action/update_cascade_config", post(action_update_cascade_config))
+        .route("/api/action/update_mera_config", post(action_update_mera_config))
         .route("/api/action/sync_balance", post(action_sync_balance))
         .route("/login", get(login_get).post(login_post))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
@@ -305,15 +313,21 @@ async fn get_chart_data(State(state): State<AppState>) -> impl IntoResponse {
     let exec = state.execution.read().await;
     let cascade_cfg = strat.config.cascade.clone();
     let telem = strat.last_indicators().cascade;
+    let mera_telem = strat.last_indicators().mera;
 
     let candles = &strat.engine.recent_candles;
-    let (baselines, uppers, lowers, stops) = strat.engine.cascade_engine.compute_series_for_candles(candles);
+    let (vwaps, centrals, uppers, lowers) = strat.mera_engine.compute_series_for_candles(candles);
 
     let mut candle_pts = Vec::with_capacity(candles.len());
-    let mut baseline_pts = Vec::with_capacity(candles.len());
-    let mut upper_pts = Vec::with_capacity(candles.len());
-    let mut lower_pts = Vec::with_capacity(candles.len());
+    let mut vwap_pts = Vec::with_capacity(candles.len());
+    let mut nw_central_pts = Vec::with_capacity(candles.len());
+    let mut nw_upper_pts = Vec::with_capacity(candles.len());
+    let mut nw_lower_pts = Vec::with_capacity(candles.len());
     let mut stop_pts = Vec::with_capacity(candles.len());
+    let mut tp_pts = Vec::with_capacity(candles.len());
+
+    let active_sl = exec.position.stop_loss.or(mera_telem.active_stop);
+    let active_tp = exec.position.take_profit.or(mera_telem.tp_partial);
 
     for (i, c) in candles.iter().enumerate() {
         let t = c.open_time / 1000;
@@ -326,24 +340,38 @@ async fn get_chart_data(State(state): State<AppState>) -> impl IntoResponse {
             volume: c.volume,
         });
 
-        if let Some(&b) = baselines.get(i) {
-            if b > 0.0 {
-                baseline_pts.push(ChartLinePoint { time: t, value: b });
+        if let Some(&vw) = vwaps.get(i) {
+            if vw > 0.0 {
+                vwap_pts.push(ChartLinePoint { time: t, value: vw });
             }
         }
-        if let Some(&u) = uppers.get(i) {
-            if u > 0.0 {
-                upper_pts.push(ChartLinePoint { time: t, value: u });
+        if let Some(&nc) = centrals.get(i) {
+            if nc > 0.0 {
+                nw_central_pts.push(ChartLinePoint { time: t, value: nc });
             }
         }
-        if let Some(&l) = lowers.get(i) {
-            if l > 0.0 {
-                lower_pts.push(ChartLinePoint { time: t, value: l });
+        if let Some(&nu) = uppers.get(i) {
+            if nu > 0.0 {
+                nw_upper_pts.push(ChartLinePoint { time: t, value: nu });
             }
         }
-        if let Some(Some(s)) = stops.get(i) {
-            if *s > 0.0 {
-                stop_pts.push(ChartLinePoint { time: t, value: *s });
+        if let Some(&nl) = lowers.get(i) {
+            if nl > 0.0 {
+                nw_lower_pts.push(ChartLinePoint { time: t, value: nl });
+            }
+        }
+
+        // Se houver posição aberta, traçar linhas de Stop Loss e Take Profit
+        if exec.position.amount > 0.0 {
+            if let Some(sl) = active_sl {
+                if sl > 0.0 {
+                    stop_pts.push(ChartLinePoint { time: t, value: sl });
+                }
+            }
+            if let Some(tp) = active_tp {
+                if tp > 0.0 {
+                    tp_pts.push(ChartLinePoint { time: t, value: tp });
+                }
             }
         }
     }
@@ -367,16 +395,41 @@ async fn get_chart_data(State(state): State<AppState>) -> impl IntoResponse {
         symbol: state.symbol.clone(),
         interval,
         candles: candle_pts,
-        baseline: baseline_pts,
-        upper_entry: upper_pts,
-        lower_entry: lower_pts,
+        baseline: nw_central_pts.clone(),
+        upper_entry: nw_upper_pts.clone(),
+        lower_entry: nw_lower_pts.clone(),
         active_stop: stop_pts,
+        vwap: vwap_pts,
+        nw_central: nw_central_pts,
+        nw_upper: nw_upper_pts,
+        nw_lower: nw_lower_pts,
+        active_tp: tp_pts,
         markers,
         cascade: telem,
         cascade_config: cascade_cfg,
+        mera: mera_telem,
+        mera_config: strat.mera_engine.config.clone(),
     };
 
     Json(resp)
+}
+
+async fn action_update_mera_config(
+    State(state): State<AppState>,
+    Json(payload): Json<MeraConfig>,
+) -> impl IntoResponse {
+    {
+        let mut strat = state.strategy.write().await;
+        strat.mera_engine.set_config(payload.clone());
+    }
+
+    if let Ok(mut config) = AppConfig::load_or_create("config.toml") {
+        config.mera = payload.clone();
+        let _ = config.save_to_file("config.toml");
+    }
+
+    info!("[MERA CONFIG] Parâmetros do motor MERA atualizados com sucesso via Dashboard.");
+    Json(serde_json::json!({ "success": true, "config": payload }))
 }
 
 async fn action_update_cascade_config(
@@ -1178,14 +1231,42 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
         }
 
         .chart-container {
-            height: 390px;
+            height: 480px;
             width: 100%;
             transition: height 0.3s cubic-bezier(0.16, 1, 0.3, 1);
         }
 
+        .chart-legend-strip {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 9px 16px;
+            background: rgba(14, 15, 18, 0.95);
+            border-bottom: 1px solid var(--border-subtle);
+            overflow-x: auto;
+            white-space: nowrap;
+            font-size: 0.72rem;
+            font-family: var(--font-mono);
+        }
+
+        .legend-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        .legend-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+
         @media (max-width: 640px) {
             .chart-container {
-                height: 310px;
+                height: 320px;
             }
             .chart-container.collapsed {
                 height: 0px !important;
@@ -1547,15 +1628,16 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
             <div class="brand-area">
                 <div class="brand-title">
                     <span class="live-dot"></span>
-                    <span>MERABOT <span style="color:#ffd60a; font-weight:800; font-size:0.90rem; margin-left:6px; letter-spacing:0.04em;">CASCATA TURBO MTF</span></span>
+                    <span>MERABOT <span style="color:var(--cyan); font-weight:800; font-size:0.90rem; margin-left:6px; letter-spacing:0.04em;">MOTOR MERA SCALP 5M</span></span>
                 </div>
                 <div class="badges-group">
-                    <button id="symbolTag" class="badge badge-symbol badge-btn" onclick="openLeverageModal()" title="Toque para alterar símbolo ou alavancagem">SOLUSDT 15m</button>
+                    <button id="symbolTag" class="badge badge-symbol badge-btn" onclick="openLeverageModal()" title="Toque para alterar símbolo ou alavancagem">ETHUSDT 5m</button>
                     <span id="modeTag" class="badge badge-mode">PAPER</span>
                     <span id="statusTag" class="badge badge-status status-running">RUNNING</span>
-                    <span class="badge" style="background: rgba(48, 209, 88, 0.14); color: #30d158; border: 1px solid rgba(48, 209, 88, 0.3); font-weight: 700;" title="Sincronização Ativa dos Filtros Diário D1 e 4 Horas">MTF D1+4H SYNC</span>
-                    <span class="badge" style="background: rgba(100, 210, 255, 0.14); color: var(--cyan); border: 1px solid rgba(100, 210, 255, 0.3); font-weight: 700;" title="Parcial Automática 50% em +2.50% e Breakeven em +0.25%">PARCIAL 50% + BE</span>
-                    <button id="btnOpenCascadeModal" class="badge badge-btn" style="background: rgba(255, 214, 10, 0.16); color: #ffd60a; border: 1px solid rgba(255, 214, 10, 0.35); cursor: pointer;" onclick="openCascadeModal()" title="Configurar Parâmetros da Cascata MTF">⚡ Cascata MTF ⚙️</button>
+                    <span class="badge" style="background: rgba(0, 242, 254, 0.14); color: var(--cyan); border: 1px solid rgba(0, 242, 254, 0.3); font-weight: 700;" title="Preço Médio Ponderado por Volume da Sessão 00:00 UTC">VWAP INSTITUCIONAL</span>
+                    <span class="badge" style="background: rgba(191, 90, 242, 0.14); color: #bf5af2; border: 1px solid rgba(191, 90, 242, 0.3); font-weight: 700;" title="Regressão Não-Paramétrica com Kernel Gaussiano e Envelope MAE">NADARAYA-WATSON 5M</span>
+                    <span class="badge" style="background: rgba(48, 209, 88, 0.14); color: #30d158; border: 1px solid rgba(48, 209, 88, 0.3); font-weight: 700;" title="Parcial Automática 50% em +1.00% e Breakeven em +0.15%">PARCIAL 50% + BE</span>
+                    <button id="btnOpenMeraModal" class="badge badge-btn" style="background: rgba(0, 242, 254, 0.16); color: var(--cyan); border: 1px solid rgba(0, 242, 254, 0.35); cursor: pointer;" onclick="openMeraModal()" title="Configurar Parâmetros do Motor MERA">⚡ Motor MERA ⚙️</button>
                     <button id="riskTag" class="badge badge-symbol badge-btn" onclick="openRiskModal()" title="Toque para calibrar risco da banca">🛡️ <span id="riskBadgeText">16.0% Risco</span> ✏️</button>
                 </div>
             </div>
@@ -1815,139 +1897,68 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
 
         <!-- SPLIT: COCKPIT & LIVE CHART -->
         <section class="content-split">
-            <!-- COCKPIT CASCATA TURBO MTF (NOVO MOTOR OFICIAL) -->
-            <div class="section-card" style="border: 1px solid rgba(255, 214, 10, 0.25);">
-                <div class="card-header">
-                    <div class="card-title">⚡ Cockpit Cascata Turbo MTF (OLS 100 • Bandas Adaptativas)</div>
-                    <span id="cbTag" class="badge badge-live" style="background: rgba(255, 214, 10, 0.16); color: #ffd60a; border: 1px solid rgba(255, 214, 10, 0.35);">CASCATA MTF ATIVA</span>
-                </div>
-                <div class="indicator-list">
-                    <div class="ind-item">
-                        <div class="ind-name">
-                            <span>🧭 Alinhamento MTF (Diário D1 & 4H)</span>
-                        </div>
-                        <div class="ind-val" style="display: flex; align-items: center; gap: 8px;">
-                            <span id="cockpitD1Badge" class="badge badge-live" style="font-weight: 700;">D1: NEUTRO</span>
-                            <span id="cockpitH4Badge" class="badge badge-mode" style="font-weight: 700;">4H: NEUTRO</span>
-                        </div>
-                    </div>
-                    <div class="ind-item">
-                        <div class="ind-name">
-                            <span>📈 OLS 100 & Bandas Adaptativas (15m)</span>
-                        </div>
-                        <div class="ind-val">
-                            <span id="cockpitUpper" class="c-up" title="Banda Superior de Rompimento Long">Long: $0.00</span>
-                            <span style="color: var(--text-tertiary); margin: 0 4px;">|</span>
-                            <span id="cockpitBaseline" style="color: #ffd60a;" title="Linha de Regressão Linear OLS 100">OLS: $0.00</span>
-                            <span style="color: var(--text-tertiary); margin: 0 4px;">|</span>
-                            <span id="cockpitLower" class="c-down" title="Banda Inferior de Rompimento Short">Short: $0.00</span>
-                        </div>
-                    </div>
-                    <div class="ind-item">
-                        <div class="ind-name">
-                            <span>🎯 Metas da Posição (Cascata Turbo)</span>
-                        </div>
-                        <div class="ind-val">
-                            <span class="c-cyan" style="font-weight: 700;">Parcial 50% (+2.50%)</span>
-                            <span style="color: var(--text-tertiary); margin: 0 4px;">|</span>
-                            <span class="c-up" style="font-weight: 700;">Breakeven (+0.25%)</span>
-                            <span style="color: var(--text-tertiary); margin: 0 4px;">|</span>
-                            <span class="c-amber" style="font-size: 0.78rem;">Trailing Supertrend</span>
-                        </div>
-                    </div>
-                    <div class="ind-item">
-                        <div class="ind-name">
-                            <span>🌊 Choppiness Index (Regime 15m)</span>
-                        </div>
-                        <div class="ind-val">
-                            <span id="cockpitChopVal" style="font-family: var(--font-mono); font-weight: 700;">0.0</span>
-                            <span id="cockpitChopBadge" class="badge badge-live" style="margin-left: 6px;">CALCULANDO</span>
-                        </div>
-                    </div>
-                    <div class="ind-item">
-                        <div class="ind-name">
-                            <span>🚀 Smart Ignition & Confluência</span>
-                        </div>
-                        <div class="ind-val">
-                            <span id="cockpitIgnitionStatus" class="c-cyan" style="font-weight: 600;">Monitorando Expansão de Volatilidade</span>
-                        </div>
-                    </div>
-                    <div class="ind-item" style="cursor: pointer;" onclick="openRiskModal()" title="Toque para calibrar risco por trade">
-                        <div class="ind-name">
-                            <span>🛡️ Risco por Trade / Alavancagem</span>
-                        </div>
-                        <div class="ind-val">
-                            <span id="indRiskVal" class="c-amber">16.0%</span>
-                            <span style="color: var(--text-tertiary); margin: 0 4px;">/</span>
-                            <span id="cockpitLevVal" class="c-cyan">5x ISOLATED</span>
-                            <span style="font-size: 0.72rem; margin-left: 4px;">✏️</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- PROP DESK CASCADE HUD (ESPELHO DA TABELA PINE SCRIPT) -->
-            <div class="cascade-hud-wrapper" id="cascadeHudWrapper">
+            <!-- MOTOR MERA SCALPER HUD (SESSION VWAP & NADARAYA-WATSON ENVELOPE) -->
+            <div class="cascade-hud-wrapper" id="meraHudWrapper">
                 <div class="cascade-hud-header">
                     <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                        <span style="font-size: 0.90rem; font-weight: 800; color: #ffd60a; letter-spacing: 0.04em;">
-                            ⚡ PROP DESK CASCADE — MTF DUPLO & CONFLUÊNCIA BAYESIANA
+                        <span style="font-size: 0.90rem; font-weight: 800; color: var(--cyan); letter-spacing: 0.04em;">
+                            ⚡ MOTOR MERA SCALPER — SESSION VWAP & NADARAYA-WATSON ENVELOPE (5M)
                         </span>
-                        <span id="cascadeActiveBadge" class="badge badge-live">MOTOR ATIVO</span>
+                        <span id="meraActiveBadge" class="badge badge-live">MOTOR MERA ATIVO</span>
                     </div>
-                    <button class="btn" style="background: rgba(255, 214, 10, 0.15); color: #ffd60a; border-color: rgba(255, 214, 10, 0.35); font-size: 0.74rem; padding: 5px 12px; cursor: pointer;" onclick="openCascadeModal()">
-                        ⚙️ Calibrar Parâmetros
+                    <button class="btn" style="background: rgba(0, 242, 254, 0.15); color: var(--cyan); border-color: rgba(0, 242, 254, 0.35); font-size: 0.74rem; padding: 5px 12px; cursor: pointer;" onclick="openMeraModal()">
+                        ⚙️ Calibrar Motor MERA
                     </button>
                 </div>
 
                 <div class="cascade-hud-grid">
                     <div class="cascade-hud-card">
-                        <span class="cascade-hud-lbl">Macro (1D Veto)</span>
-                        <span class="cascade-hud-val" id="hudMacroBias">NEUTRO</span>
+                        <span class="cascade-hud-lbl">Viés Macro Institucional</span>
+                        <span class="cascade-hud-val" id="hudMeraBias">--</span>
                     </div>
                     <div class="cascade-hud-card">
-                        <span class="cascade-hud-lbl">Contexto (4h)</span>
-                        <span class="cascade-hud-val" id="hudCtxBias">NEUTRO</span>
+                        <span class="cascade-hud-lbl">VWAP da Sessão (00:00 UTC)</span>
+                        <span class="cascade-hud-val" id="hudMeraVwap">--</span>
                     </div>
                     <div class="cascade-hud-card">
-                        <span class="cascade-hud-lbl">Convicção Long</span>
-                        <span class="cascade-hud-val" id="hudConvLong">--</span>
+                        <span class="cascade-hud-lbl">Nadaraya Linha Central</span>
+                        <span class="cascade-hud-val" id="hudMeraNwCentral">--</span>
                     </div>
                     <div class="cascade-hud-card">
-                        <span class="cascade-hud-lbl">Convicção Short</span>
-                        <span class="cascade-hud-val" id="hudConvShort">--</span>
-                    </div>
-                    <div class="cascade-hud-card">
-                        <span class="cascade-hud-lbl">Slope Exec (OLS/ATR)</span>
-                        <span class="cascade-hud-val" id="hudSlopeExec">0.000</span>
-                    </div>
-                    <div class="cascade-hud-card">
-                        <span class="cascade-hud-lbl">Estrutura (Pivots)</span>
-                        <span class="cascade-hud-val" id="hudScoreStruct">0.00</span>
-                    </div>
-                    <div class="cascade-hud-card">
-                        <span class="cascade-hud-lbl">Momentum Inst.</span>
-                        <span class="cascade-hud-val" id="hudScoreMom">0.00</span>
-                    </div>
-                    <div class="cascade-hud-card">
-                        <span class="cascade-hud-lbl">Exaustão (RSI)</span>
-                        <span class="cascade-hud-val" id="hudScoreExh">0.00</span>
-                    </div>
-                    <div class="cascade-hud-card">
-                        <span class="cascade-hud-lbl">Choppiness Index</span>
-                        <span class="cascade-hud-val" id="hudScoreChop">0.00</span>
-                    </div>
-                    <div class="cascade-hud-card" style="background: rgba(48, 209, 88, 0.08); border-color: rgba(48, 209, 88, 0.25);">
-                        <span class="cascade-hud-lbl" style="color: var(--green);">SCORE LONG</span>
-                        <span class="cascade-hud-val c-up" id="hudScoreLong">0.00</span>
+                        <span class="cascade-hud-lbl">Slope Nadaraya (% vela)</span>
+                        <span class="cascade-hud-val" id="hudMeraNwSlope">--</span>
                     </div>
                     <div class="cascade-hud-card" style="background: rgba(255, 69, 58, 0.08); border-color: rgba(255, 69, 58, 0.25);">
-                        <span class="cascade-hud-lbl" style="color: var(--red);">SCORE SHORT</span>
-                        <span class="cascade-hud-val c-down" id="hudScoreShort">0.00</span>
+                        <span class="cascade-hud-lbl" style="color: var(--red);">ZONA PRÊMIO (NW UPPER)</span>
+                        <span class="cascade-hud-val c-down" id="hudMeraNwUpper">--</span>
+                    </div>
+                    <div class="cascade-hud-card" style="background: rgba(48, 209, 88, 0.08); border-color: rgba(48, 209, 88, 0.25);">
+                        <span class="cascade-hud-lbl" style="color: var(--green);">ZONA DESCONTO (NW LOWER)</span>
+                        <span class="cascade-hud-val c-up" id="hudMeraNwLower">--</span>
                     </div>
                     <div class="cascade-hud-card">
-                        <span class="cascade-hud-lbl">Limiar Mínimo</span>
-                        <span class="cascade-hud-val" style="color: var(--text-secondary);" id="hudMinThreshold">0.70</span>
+                        <span class="cascade-hud-lbl">Volume Ratio (vs SMA20)</span>
+                        <span class="cascade-hud-val" id="hudMeraVolRatio">--</span>
+                    </div>
+                    <div class="cascade-hud-card">
+                        <span class="cascade-hud-lbl">Gatilho Long (Compra)</span>
+                        <span class="cascade-hud-val" id="hudMeraSetupLong">MONITORANDO</span>
+                    </div>
+                    <div class="cascade-hud-card">
+                        <span class="cascade-hud-lbl">Gatilho Short (Venda)</span>
+                        <span class="cascade-hud-val" id="hudMeraSetupShort">MONITORANDO</span>
+                    </div>
+                    <div class="cascade-hud-card">
+                        <span class="cascade-hud-lbl">Alvo TP Parcial (50%)</span>
+                        <span class="cascade-hud-val c-up" id="hudMeraTpPartial">+1.00%</span>
+                    </div>
+                    <div class="cascade-hud-card">
+                        <span class="cascade-hud-lbl">Alvo TP Final</span>
+                        <span class="cascade-hud-val c-up" id="hudMeraTpFinal">+2.00%</span>
+                    </div>
+                    <div class="cascade-hud-card">
+                        <span class="cascade-hud-lbl">Breakeven Garantido</span>
+                        <span class="cascade-hud-val" style="color: var(--cyan);">+0.15% travado</span>
                     </div>
                 </div>
             </div>
@@ -1956,40 +1967,50 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
             <div class="chart-wrapper">
                 <div class="chart-header">
                     <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                        <span style="font-size: 0.88rem; font-weight: 700; color: #ffffff;">Gráfico Nativo Independente (Lightweight Charts)</span>
-                        <span class="badge" style="background: rgba(255, 214, 10, 0.12); color: #ffd60a; border: 1px solid rgba(255, 214, 10, 0.25); font-size: 0.68rem; font-weight: 700;" id="chartStatusBadge">AO VIVO BINANCE</span>
+                        <span style="font-size: 0.88rem; font-weight: 700; color: #ffffff;">Gráfico Nativo Independente — Motor MERA Scalp (5M ETHUSDT)</span>
+                        <span class="badge" style="background: rgba(0, 242, 254, 0.12); color: #00f2fe; border: 1px solid rgba(0, 242, 254, 0.25); font-size: 0.68rem; font-weight: 700;" id="chartStatusBadge">AO VIVO BINANCE 5M</span>
                     </div>
                     <div style="display: flex; align-items: center; gap: 8px;">
-                        <button class="chart-toggle-btn" onclick="openCascadeModal()">⚙️ Configurar Indicador</button>
+                        <button class="chart-toggle-btn" onclick="openMeraModal()">⚙️ Parâmetros MERA</button>
                         <button class="chart-toggle-btn" onclick="toggleChart()">Minimizar / Expandir</button>
                     </div>
                 </div>
 
-                <!-- LEGENDA DINAMICA DAS BANDAS E INDICADORES -->
+                <!-- LEGENDA DINAMICA DAS BANDAS E INDICADORES DO MOTOR MERA -->
                 <div class="chart-legend-strip">
                     <div class="legend-item">
-                        <span class="legend-dot" style="background: #ffd60a;"></span>
-                        <span style="color: #ffd60a;">OLS Baseline:</span>
-                        <strong id="legBaseline" style="color: #ffffff;">--</strong>
+                        <span class="legend-dot" style="background: #00f2fe;"></span>
+                        <span style="color: #00f2fe;">VWAP Sessão:</span>
+                        <strong id="legVwap" style="color: #ffffff;">--</strong>
                     </div>
                     <div class="legend-item">
-                        <span class="legend-dot" style="background: #30d158;"></span>
-                        <span style="color: #30d158;">Upper Band (Entrada Long):</span>
-                        <strong id="legUpper" style="color: #ffffff;">--</strong>
+                        <span class="legend-dot" style="background: #ffd60a;"></span>
+                        <span style="color: #ffd60a;">Nadaraya Kernel:</span>
+                        <strong id="legNwCentral" style="color: #ffffff;">--</strong>
                     </div>
                     <div class="legend-item">
                         <span class="legend-dot" style="background: #ff453a;"></span>
-                        <span style="color: #ff453a;">Lower Band (Entrada Short):</span>
-                        <strong id="legLower" style="color: #ffffff;">--</strong>
+                        <span style="color: #ff453a;">NW Upper (Prêmio):</span>
+                        <strong id="legNwUpper" style="color: #ffffff;">--</strong>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-dot" style="background: #30d158;"></span>
+                        <span style="color: #30d158;">NW Lower (Desconto):</span>
+                        <strong id="legNwLower" style="color: #ffffff;">--</strong>
                     </div>
                     <div class="legend-item">
                         <span class="legend-dot" style="background: #ff9f0a;"></span>
-                        <span style="color: #ff9f0a;">Trailing Stop Ativo:</span>
+                        <span style="color: #ff9f0a;">Stop Loss:</span>
                         <strong id="legStop" style="color: #ffffff;">--</strong>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-dot" style="background: #bf5af2;"></span>
+                        <span style="color: #bf5af2;">Take Profit:</span>
+                        <strong id="legTp" style="color: #ffffff;">--</strong>
                     </div>
                 </div>
 
-                <div class="chart-container" id="chartContainer" style="height: 500px; position: relative;">
+                <div class="chart-container" id="chartContainer" style="height: 480px; position: relative;">
                     <div id="nativeChart" style="width: 100%; height: 100%;"></div>
                 </div>
             </div>
@@ -2085,7 +2106,7 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
             </div>
             <div class="modal-body">
                 <p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 10px; line-height: 1.4;">
-                    Altere a alavancagem em <strong id="modalSymbol" class="c-cyan">SOLUSDT Perpétuo (USDⓈ-M)</strong>. Use <strong class="c-green">1x</strong> para operar sem alavancagem (Margem integral 100% USDT no Mercado Futuro).
+                    Altere a alavancagem em <strong id="modalSymbol" class="c-cyan">ETHUSDT Perpétuo (USDⓈ-M)</strong>. Use <strong class="c-green">1x</strong> para operar sem alavancagem (Margem integral 100% USDT no Mercado Futuro).
                 </p>
                 <div id="modalLevReadinessHint" style="font-size: 0.76rem; background: rgba(255, 255, 255, 0.04); padding: 8px 12px; border-radius: var(--radius-sm); margin-bottom: 12px; border-left: 3px solid var(--cyan);">
                     Calculando viabilidade de margem...
@@ -2186,75 +2207,71 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
         </div>
     </div>
 
-    <!-- MODAL DE CONFIGURAÇÃO DA CASCATA MTF -->
-    <div id="cascadeModal" class="modal-overlay" onclick="closeCascadeModal(event)">
-        <div class="modal-card" style="max-width: 540px; border-color: rgba(255, 214, 10, 0.4);" onclick="event.stopPropagation()">
+    <!-- MODAL DE CONFIGURAÇÃO DO MOTOR MERA -->
+    <div id="meraModal" class="modal-overlay" onclick="closeMeraModal(event)">
+        <div class="modal-card" style="max-width: 540px; border-color: rgba(0, 242, 254, 0.4);" onclick="event.stopPropagation()">
             <div class="modal-header">
                 <div>
-                    <h3 style="color: #ffd60a;">⚡ Parâmetros da Estratégia Cascata MTF</h3>
-                    <div style="font-size: 0.74rem; color: var(--text-tertiary);">Configuração ao vivo do motor quantitativo Prop Desk</div>
+                    <h3 style="color: var(--cyan);">⚡ Parâmetros do Motor MERA (5M)</h3>
+                    <div style="font-size: 0.74rem; color: var(--text-tertiary);">Session VWAP & Nadaraya-Watson Envelope Scalping</div>
                 </div>
-                <button class="modal-close" onclick="closeCascadeModal()">✕</button>
+                <button class="modal-close" onclick="closeMeraModal()">✕</button>
             </div>
             <div class="modal-body">
                 <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255, 255, 255, 0.04); padding: 10px 14px; border-radius: 8px; margin-bottom: 12px;">
-                    <span style="font-size: 0.82rem; font-weight: 600;">Ativar Motor Cascata Prop Desk</span>
-                    <input type="checkbox" id="cascadeEnabledInput" style="transform: scale(1.3); cursor: pointer;" checked>
+                    <span style="font-size: 0.82rem; font-weight: 600;">Ativar Motor MERA</span>
+                    <input type="checkbox" id="meraEnabledInput" style="transform: scale(1.3); cursor: pointer;" checked>
                 </div>
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
                     <div>
-                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Período Regressão (OLS)</label>
-                        <input type="number" id="cascadeLengthInput" min="10" max="500" value="100" class="lev-input" style="width: 100%; text-align: left;">
+                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Suavização Gaussiana (h)</label>
+                        <input type="number" id="meraBandwidthInput" step="0.5" min="2.0" max="30.0" value="8.0" class="lev-input" style="width: 100%; text-align: left;">
                     </div>
                     <div>
-                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Multiplicador Banda ATR</label>
-                        <input type="number" id="cascadeSdEntryInput" step="0.1" min="0.5" max="5.0" value="2.0" class="lev-input" style="width: 100%; text-align: left;">
-                    </div>
-                </div>
-
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
-                    <div>
-                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Slope Normalizado Mín.</label>
-                        <input type="number" id="cascadeMinSlopeInput" step="0.01" min="0.01" max="1.0" value="0.10" class="lev-input" style="width: 100%; text-align: left;">
-                    </div>
-                    <div>
-                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Score Mínimo Confluência</label>
-                        <input type="number" id="cascadeMinConfInput" step="0.05" min="0.4" max="1.0" value="0.70" class="lev-input" style="width: 100%; text-align: left;">
+                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Multiplicador Bandas MAE</label>
+                        <input type="number" id="meraMultInput" step="0.1" min="1.0" max="5.0" value="2.2" class="lev-input" style="width: 100%; text-align: left;">
                     </div>
                 </div>
 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
                     <div>
-                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Comprimento ATR (Stop)</label>
-                        <input type="number" id="cascadeAtrLenInput" min="5" max="100" value="22" class="lev-input" style="width: 100%; text-align: left;">
+                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Lookback Histórico (Velas)</label>
+                        <input type="number" id="meraLookbackInput" min="50" max="300" value="150" class="lev-input" style="width: 100%; text-align: left;">
                     </div>
                     <div>
-                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Multiplicador Stop ATR</label>
-                        <input type="number" id="cascadeAtrMultInput" step="0.1" min="1.0" max="6.0" value="3.0" class="lev-input" style="width: 100%; text-align: left;">
+                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Volume Mínimo (x SMA 20)</label>
+                        <input type="number" id="meraVolumeMultInput" step="0.05" min="0.5" max="2.5" value="0.85" class="lev-input" style="width: 100%; text-align: left;">
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+                    <div>
+                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Pavio Rejeição Mín. (%)</label>
+                        <input type="number" id="meraMinWickInput" step="0.05" min="0.1" max="0.7" value="0.30" class="lev-input" style="width: 100%; text-align: left;">
+                    </div>
+                    <div>
+                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Stop Loss Padrão (%)</label>
+                        <input type="number" id="meraSlPercentInput" step="0.1" min="0.3" max="3.0" value="0.80" class="lev-input" style="width: 100%; text-align: left;">
                     </div>
                 </div>
 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px;">
                     <div>
-                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">Risco por Operação (%)</label>
-                        <input type="number" id="cascadeRiskInput" step="0.5" min="0.5" max="10.0" value="2.0" class="lev-input" style="width: 100%; text-align: left;">
+                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">TP Parcial 50% (%)</label>
+                        <input type="number" id="meraTpPartialInput" step="0.1" min="0.5" max="3.0" value="1.00" class="lev-input" style="width: 100%; text-align: left;">
                     </div>
-                    <div style="display: flex; flex-direction: column; justify-content: center; gap: 6px;">
-                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.78rem; cursor: pointer;">
-                            <input type="checkbox" id="cascadeUseMtfInput" checked> Ativar Cascata MTF (1D + 4h)
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.78rem; cursor: pointer;">
-                            <input type="checkbox" id="cascadeUseIgnitionInput" checked> Ativar Ignição de Momentum
-                        </label>
+                    <div>
+                        <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 4px;">TP Final 100% (%)</label>
+                        <input type="number" id="meraTpFinalInput" step="0.2" min="1.0" max="6.0" value="2.00" class="lev-input" style="width: 100%; text-align: left;">
                     </div>
                 </div>
 
-                <div id="cascadeStatusMsg" style="font-size: 0.75rem; margin-bottom: 12px; min-height: 18px; text-align: center;"></div>
+                <div id="meraStatusMsg" style="font-size: 0.75rem; margin-bottom: 12px; min-height: 18px; text-align: center;"></div>
                 <div style="display: flex; gap: 8px;">
-                    <button class="btn btn-secondary" onclick="closeCascadeModal()" style="flex: 1;">Cancelar</button>
-                    <button class="btn btn-apply-lev" id="btnConfirmCascade" onclick="applyCascadeConfig()" style="flex: 1.5; background: linear-gradient(135deg, #ffd60a, #ff9f0a); color: #000000;">
-                        Salvar e Aplicar
+                    <button class="btn btn-secondary" onclick="closeMeraModal()" style="flex: 1;">Cancelar</button>
+                    <button class="btn btn-apply-lev" id="btnConfirmMera" onclick="applyMeraConfig()" style="flex: 1.5; background: linear-gradient(135deg, #00f2fe, #4facfe); color: #000000; font-weight: 700;">
+                        Salvar e Aplicar MERA
                     </button>
                 </div>
             </div>
@@ -2268,12 +2285,12 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
     </div>
 
     <script>
-        let currentLeverage = 5;
-        let currentSymbol = 'SOLUSDT';
-        let currentMinNotional = 5.50;
+        let currentLeverage = 1;
+        let currentSymbol = 'ETHUSDT';
+        let currentMinNotional = 5.0;
         let currentRiskPerTrade = 16.0;
         let currentTimeframe = '15';
-        let chartLoadedSymbol = 'SOLUSDT';
+        let chartLoadedSymbol = 'ETHUSDT';
 
         function showToast(msg, type = 'info') {
             const toast = document.getElementById('appleToast');
@@ -2416,14 +2433,14 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
 
                 // 2. Gráfico TradingView
                 try {
-                    updateChartSymbol(data.symbol || 'SOLUSDT');
+                    updateChartSymbol(data.symbol || 'ETHUSDT');
                 } catch (e) {
                     console.warn("Chart update error:", e);
                 }
 
                 // 3. Top Header Tags
                 const symTag = document.getElementById('symbolTag');
-                if (symTag) symTag.textContent = (data.symbol || 'SOLUSDT') + ' ' + (currentTimeframe === 'D' ? '1D' : (parseInt(currentTimeframe) >= 60 ? (parseInt(currentTimeframe)/60)+'h' : currentTimeframe+'m'));
+                if (symTag) symTag.textContent = (data.symbol || 'ETHUSDT') + ' ' + (currentTimeframe === 'D' ? '1D' : (parseInt(currentTimeframe) >= 60 ? (parseInt(currentTimeframe)/60)+'h' : currentTimeframe+'m'));
 
                 const modeTag = document.getElementById('modeTag');
                 if (modeTag) {
@@ -2601,83 +2618,66 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
 
                 currentSymbol = data.symbol;
 
-                // Cascata Turbo MTF Status & Indicators
-                const c = (data.indicators && data.indicators.cascade) ? data.indicators.cascade : null;
+                // MERA Scalper Status & Indicators
+                const m = (data.indicators && data.indicators.mera) ? data.indicators.mera : null;
                 const radarRegText = document.getElementById('radarMarketStatus');
 
-                if (c) {
-                    // Cockpit D1 & 4H
-                    const d1El = document.getElementById('cockpitD1Badge');
-                    if (d1El) {
-                        const isBull = c.d_bias === 1 || c.d_bias === 'ALTA';
-                        const isBear = c.d_bias === -1 || c.d_bias === 'BAIXA';
-                        d1El.textContent = 'D1: ' + (isBull ? 'ALTA (BULL)' : (isBear ? 'BAIXA (BEAR)' : 'NEUTRO'));
-                        d1El.className = 'badge ' + (isBull ? 'badge-live' : (isBear ? 'badge-status status-stopped' : 'badge-mode'));
-                        d1El.style.background = isBull ? 'rgba(48, 209, 88, 0.18)' : (isBear ? 'rgba(255, 69, 58, 0.18)' : 'rgba(255, 255, 255, 0.08)');
-                        d1El.style.color = isBull ? 'var(--green)' : (isBear ? 'var(--red)' : 'var(--text-tertiary)');
+                if (m) {
+                    const biasEl = document.getElementById('hudMeraBias');
+                    if (biasEl) {
+                        biasEl.textContent = m.bias_bullish ? 'ALTA (Preço > VWAP)' : (m.bias_bearish ? 'BAIXA (Preço < VWAP)' : 'NEUTRO');
+                        biasEl.className = 'cascade-hud-val ' + (m.bias_bullish ? 'c-up' : (m.bias_bearish ? 'c-down' : ''));
                     }
 
-                    const h4El = document.getElementById('cockpitH4Badge');
-                    if (h4El) {
-                        const isBull = c.h_bias === 1 || c.h_bias === 'ALTA';
-                        const isBear = c.h_bias === -1 || c.h_bias === 'BAIXA';
-                        h4El.textContent = '4H: ' + (isBull ? 'ALTA' : (isBear ? 'BAIXA' : 'NEUTRO'));
-                        h4El.className = 'badge ' + (isBull ? 'badge-live' : (isBear ? 'badge-status status-stopped' : 'badge-mode'));
-                        h4El.style.background = isBull ? 'rgba(48, 209, 88, 0.18)' : (isBear ? 'rgba(255, 69, 58, 0.18)' : 'rgba(255, 255, 255, 0.08)');
-                        h4El.style.color = isBull ? 'var(--green)' : (isBear ? 'var(--red)' : 'var(--text-tertiary)');
+                    const vwapEl = document.getElementById('hudMeraVwap');
+                    if (vwapEl && m.session_vwap > 0) vwapEl.textContent = '$' + m.session_vwap.toFixed(2);
+
+                    const nwCentEl = document.getElementById('hudMeraNwCentral');
+                    if (nwCentEl && m.nw_central > 0) nwCentEl.textContent = '$' + m.nw_central.toFixed(2);
+
+                    const nwSlopeEl = document.getElementById('hudMeraNwSlope');
+                    if (nwSlopeEl) {
+                        const sign = m.nw_slope_pct >= 0 ? '+' : '';
+                        nwSlopeEl.textContent = sign + m.nw_slope_pct.toFixed(3) + '%';
+                        nwSlopeEl.className = 'cascade-hud-val ' + (m.nw_slope_pct > 0.02 ? 'c-up' : (m.nw_slope_pct < -0.02 ? 'c-down' : ''));
                     }
 
-                    // Cockpit Adaptive Bands
+                    const nwUpEl = document.getElementById('hudMeraNwUpper');
+                    if (nwUpEl && m.nw_upper > 0) nwUpEl.textContent = '$' + m.nw_upper.toFixed(2);
+
+                    const nwLowEl = document.getElementById('hudMeraNwLower');
+                    if (nwLowEl && m.nw_lower > 0) nwLowEl.textContent = '$' + m.nw_lower.toFixed(2);
+
+                    const volRatEl = document.getElementById('hudMeraVolRatio');
+                    if (volRatEl) {
+                        volRatEl.textContent = m.volume_ratio.toFixed(2) + 'x ' + (m.is_volume_ok ? '✔ (OK)' : '⚠ (Baixo)');
+                        volRatEl.className = 'cascade-hud-val ' + (m.is_volume_ok ? 'c-up' : 'c-amber');
+                    }
+
+                    const setupLongEl = document.getElementById('hudMeraSetupLong');
+                    if (setupLongEl) {
+                        setupLongEl.textContent = m.setup_long ? '⚡ GATILHO COMPRA!' : (m.bias_bullish ? 'DESCONTO / RETRAÇÃO' : 'AGUARDANDO VWAP');
+                        setupLongEl.className = 'cascade-hud-val ' + (m.setup_long ? 'c-up' : '');
+                    }
+
+                    const setupShortEl = document.getElementById('hudMeraSetupShort');
+                    if (setupShortEl) {
+                        setupShortEl.textContent = m.setup_short ? '⚡ GATILHO VENDA!' : (m.bias_bearish ? 'PRÊMIO / REPIQUE' : 'AGUARDANDO VWAP');
+                        setupShortEl.className = 'cascade-hud-val ' + (m.setup_short ? 'c-down' : '');
+                    }
+
+                    // Cockpit Bands
                     const cuEl = document.getElementById('cockpitUpper');
-                    if (cuEl && c.upper_entry > 0) cuEl.textContent = 'Long: $' + c.upper_entry.toFixed(2);
+                    if (cuEl && m.nw_upper > 0) cuEl.textContent = 'Short: $' + m.nw_upper.toFixed(2);
                     const cbEl = document.getElementById('cockpitBaseline');
-                    if (cbEl && c.baseline > 0) cbEl.textContent = 'OLS: $' + c.baseline.toFixed(2);
+                    if (cbEl && m.session_vwap > 0) cbEl.textContent = 'VWAP: $' + m.session_vwap.toFixed(2);
                     const clEl = document.getElementById('cockpitLower');
-                    if (clEl && c.lower_entry > 0) clEl.textContent = 'Short: $' + c.lower_entry.toFixed(2);
-
-                    // Choppiness Index
-                    const chopV = document.getElementById('cockpitChopVal');
-                    const chopB = document.getElementById('cockpitChopBadge');
-                    if (chopV) chopV.textContent = (c.chop_val || 0).toFixed(1);
-                    if (chopB) {
-                        if (c.chop_val < 46.0) {
-                            chopB.textContent = 'TENDÊNCIA FORTE';
-                            chopB.className = 'badge badge-live';
-                            chopB.style.background = 'rgba(48, 209, 88, 0.18)';
-                            chopB.style.color = 'var(--green)';
-                        } else if (c.chop_val > 54.0) {
-                            chopB.textContent = 'CONSOLIDAÇÃO / LATERAL';
-                            chopB.className = 'badge badge-mode';
-                            chopB.style.background = 'rgba(255, 159, 10, 0.18)';
-                            chopB.style.color = 'var(--amber)';
-                        } else {
-                            chopB.textContent = 'TRANSIÇÃO / MISTO';
-                            chopB.className = 'badge badge-mode';
-                            chopB.style.background = 'rgba(100, 210, 255, 0.18)';
-                            chopB.style.color = 'var(--cyan)';
-                        }
-                    }
-
-                    // Smart Ignition
-                    const ignEl = document.getElementById('cockpitIgnitionStatus');
-                    if (ignEl) {
-                        if (c.ignition_long) {
-                            ignEl.innerHTML = '<span class="c-up" style="font-weight:800;">⚡ IGNITION LONG DETECTADO!</span>';
-                        } else if (c.ignition_short) {
-                            ignEl.innerHTML = '<span class="c-down" style="font-weight:800;">⚡ IGNITION SHORT DETECTADO!</span>';
-                        } else if (c.chop_val > 58.0) {
-                            ignEl.innerHTML = '<span class="c-amber">Smart Ignition: Travado por Alta Congestão (Chop > 58)</span>';
-                        } else {
-                            ignEl.innerHTML = '<span class="c-cyan">Smart Ignition: Monitorando Rompimento OLS 100</span>';
-                        }
-                    }
+                    if (clEl && m.nw_lower > 0) clEl.textContent = 'Long: $' + m.nw_lower.toFixed(2);
 
                     // Radar Market Status Text
                     if (radarRegText) {
-                        const d1Str = (c.d_bias === 1 || c.d_bias === 'ALTA') ? '<span class="c-up" style="font-weight:700;">ALTA (BULL)</span>' : (c.d_bias === -1 || c.d_bias === 'BAIXA') ? '<span class="c-down" style="font-weight:700;">BAIXA (BEAR)</span>' : '<span style="color: var(--text-tertiary);">NEUTRO</span>';
-                        const h4Str = (c.h_bias === 1 || c.h_bias === 'ALTA') ? '<span class="c-up" style="font-weight:700;">ALTA</span>' : (c.h_bias === -1 || c.h_bias === 'BAIXA') ? '<span class="c-down" style="font-weight:700;">BAIXA</span>' : '<span style="color: var(--text-tertiary);">NEUTRO</span>';
-                        const chopDesc = c.chop_val < 46.0 ? '<span class="c-up">Tendência Forte (' + c.chop_val.toFixed(1) + ')</span>' : (c.chop_val > 54.0 ? '<span class="c-amber">Consolidação (' + c.chop_val.toFixed(1) + ')</span>' : '<span class="c-cyan">Transição (' + c.chop_val.toFixed(1) + ')</span>');
-                        radarRegText.innerHTML = `Macro D1: ${d1Str} | Contexto 4h: ${h4Str} | Choppiness: ${chopDesc}<br>Bandas Adaptativas: Long <strong class="c-up">$${(c.upper_entry || 0).toFixed(2)}</strong> | OLS <strong style="color:#ffd60a;">$${(c.baseline || 0).toFixed(2)}</strong> | Short <strong class="c-down">$${(c.lower_entry || 0).toFixed(2)}</strong>`;
+                        const biasStr = m.bias_bullish ? '<span class="c-up" style="font-weight:700;">ALTA INSTITUCIONAL (BULL)</span>' : (m.bias_bearish ? '<span class="c-down" style="font-weight:700;">BAIXA INSTITUCIONAL (BEAR)</span>' : '<span style="color: var(--text-tertiary);">NEUTRO</span>');
+                        radarRegText.innerHTML = `Fluxo VWAP: ${biasStr} (VWAP: <strong>$${m.session_vwap.toFixed(2)}</strong>) | Kernel Nadaraya: <strong>$${m.nw_central.toFixed(2)}</strong><br>Bandas de Reversão: Compra <strong class="c-up">$${m.nw_lower.toFixed(2)}</strong> | Venda <strong class="c-down">$${m.nw_upper.toFixed(2)}</strong> | Volume: <strong>${m.volume_ratio.toFixed(2)}x SMA20</strong>`;
                     }
                 }
 
@@ -2799,7 +2799,7 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
                         const pricesStr = `$${entryPrice.toFixed(2)} → $${t.price.toFixed(2)}`;
 
                         // Quantity and Notional
-                        const baseSymbol = (t.symbol || data.symbol || 'SOLUSDT').replace('USDT', '');
+                        const baseSymbol = (t.symbol || data.symbol || 'ETHUSDT').replace('USDT', '');
                         const qtyStr = `${t.quantity.toFixed(4)} ${baseSymbol}`;
                         const notionalStr = `<span style="color: var(--text-tertiary); font-size: 0.72rem;">($${notional.toFixed(2)})</span>`;
 
@@ -2860,8 +2860,8 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
         }
 
         function openLeverageModal() {
-            document.getElementById('customLevInput').value = currentLeverage || 5;
-            document.getElementById('modalSymbol').textContent = currentSymbol || 'SOLUSDT';
+            document.getElementById('customLevInput').value = currentLeverage || 1;
+            document.getElementById('modalSymbol').textContent = currentSymbol || 'ETHUSDT';
             document.getElementById('levStatusMsg').textContent = '';
             document.querySelectorAll('.btn-lev-pill').forEach(b => {
                 b.classList.toggle('selected', parseInt(b.textContent) === currentLeverage);
@@ -3002,15 +3002,16 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
         }
 
         /* ==========================================================
-           LIGHTWEIGHT CHARTS NATIVE INTEGRATION & CASCADE MTF
+           LIGHTWEIGHT CHARTS NATIVE INTEGRATION — MOTOR MERA (5M)
            ========================================================== */
         let nativeChart = null;
         let candleSeries = null;
-        let baselineSeries = null;
-        let upperSeries = null;
-        let lowerSeries = null;
+        let vwapSeries = null;
+        let nwCentralSeries = null;
+        let nwUpperSeries = null;
+        let nwLowerSeries = null;
         let stopSeries = null;
-        let lastCascadeConfig = null;
+        let tpSeries = null;
         let chartDataLoaded = false;
 
         function initNativeChart() {
@@ -3019,7 +3020,7 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
 
             nativeChart = LightweightCharts.createChart(chartDiv, {
                 width: chartDiv.clientWidth,
-                height: 500,
+                height: 480,
                 layout: {
                     background: { color: '#0c0d10' },
                     textColor: '#a1a1a6',
@@ -3064,56 +3065,91 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
                 wickDownColor: '#ff453a',
             });
 
-            baselineSeries = nativeChart.addLineSeries({
+            // 1. Session VWAP (00:00 UTC Anchor) - Cyan
+            vwapSeries = nativeChart.addLineSeries({
+                color: '#00f2fe',
+                lineWidth: 2,
+                title: 'Session VWAP',
+                priceLineVisible: false,
+            });
+
+            // 2. Nadaraya-Watson Central (Gaussian Kernel Regression) - Gold/Amber
+            nwCentralSeries = nativeChart.addLineSeries({
                 color: '#ffd60a',
                 lineWidth: 2,
-                title: 'OLS Baseline',
+                title: 'NW Central',
                 priceLineVisible: false,
             });
 
-            upperSeries = nativeChart.addLineSeries({
-                color: '#30d158',
-                lineWidth: 1.5,
-                lineStyle: LightweightCharts.LineStyle.Dashed,
-                title: 'Upper Band',
-                priceLineVisible: false,
-            });
-
-            lowerSeries = nativeChart.addLineSeries({
+            // 3. Nadaraya-Watson Upper Band (Zona Prêmio / Venda) - Red Dashed
+            nwUpperSeries = nativeChart.addLineSeries({
                 color: '#ff453a',
                 lineWidth: 1.5,
                 lineStyle: LightweightCharts.LineStyle.Dashed,
-                title: 'Lower Band',
+                title: 'NW Upper (Prêmio)',
                 priceLineVisible: false,
             });
 
+            // 4. Nadaraya-Watson Lower Band (Zona Desconto / Compra) - Green Dashed
+            nwLowerSeries = nativeChart.addLineSeries({
+                color: '#30d158',
+                lineWidth: 1.5,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                title: 'NW Lower (Desconto)',
+                priceLineVisible: false,
+            });
+
+            // 5. Active Stop Loss (Trailing / Breakeven Seguro) - Orange Solid
             stopSeries = nativeChart.addLineSeries({
                 color: '#ff9f0a',
                 lineWidth: 2,
                 lineStyle: LightweightCharts.LineStyle.Solid,
-                title: 'Supertrend Stop',
+                title: 'Stop Loss',
+                priceLineVisible: false,
+            });
+
+            // 6. Active Take Profit (Alvos Parcial / Final) - Purple Dashed
+            tpSeries = nativeChart.addLineSeries({
+                color: '#bf5af2',
+                lineWidth: 1.5,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                title: 'Take Profit',
                 priceLineVisible: false,
             });
 
             // Crosshair subscriber to update legend strip on hover
             nativeChart.subscribeCrosshairMove(param => {
                 if (!param || !param.time || !param.seriesData) return;
-                const bVal = param.seriesData.get(baselineSeries);
-                const uVal = param.seriesData.get(upperSeries);
-                const lVal = param.seriesData.get(lowerSeries);
-                const sVal = param.seriesData.get(stopSeries);
+                const vwVal = param.seriesData.get(vwapSeries);
+                const ncVal = param.seriesData.get(nwCentralSeries);
+                const nuVal = param.seriesData.get(nwUpperSeries);
+                const nlVal = param.seriesData.get(nwLowerSeries);
+                const stVal = param.seriesData.get(stopSeries);
+                const tpVal = param.seriesData.get(tpSeries);
 
-                if (bVal && bVal.value !== undefined) {
-                    document.getElementById('legBaseline').textContent = '$' + bVal.value.toFixed(2);
+                if (vwVal && vwVal.value !== undefined) {
+                    const el = document.getElementById('legVwap');
+                    if (el) el.textContent = '$' + vwVal.value.toFixed(2);
                 }
-                if (uVal && uVal.value !== undefined) {
-                    document.getElementById('legUpper').textContent = '$' + uVal.value.toFixed(2);
+                if (ncVal && ncVal.value !== undefined) {
+                    const el = document.getElementById('legNwCentral');
+                    if (el) el.textContent = '$' + ncVal.value.toFixed(2);
                 }
-                if (lVal && lVal.value !== undefined) {
-                    document.getElementById('legLower').textContent = '$' + lVal.value.toFixed(2);
+                if (nuVal && nuVal.value !== undefined) {
+                    const el = document.getElementById('legNwUpper');
+                    if (el) el.textContent = '$' + nuVal.value.toFixed(2);
                 }
-                if (sVal && sVal.value !== undefined) {
-                    document.getElementById('legStop').textContent = '$' + sVal.value.toFixed(2);
+                if (nlVal && nlVal.value !== undefined) {
+                    const el = document.getElementById('legNwLower');
+                    if (el) el.textContent = '$' + nlVal.value.toFixed(2);
+                }
+                if (stVal && stVal.value !== undefined) {
+                    const el = document.getElementById('legStop');
+                    if (el) el.textContent = '$' + stVal.value.toFixed(2);
+                }
+                if (tpVal && tpVal.value !== undefined) {
+                    const el = document.getElementById('legTp');
+                    if (el) el.textContent = '$' + tpVal.value.toFixed(2);
                 }
             });
 
@@ -3147,96 +3183,61 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
                     }
                 }
 
-                if (baselineSeries && data.baseline) baselineSeries.setData(data.baseline);
-                if (upperSeries && data.upper_entry) upperSeries.setData(data.upper_entry);
-                if (lowerSeries && data.lower_entry) lowerSeries.setData(data.lower_entry);
+                if (vwapSeries && data.vwap) vwapSeries.setData(data.vwap);
+                if (nwCentralSeries && (data.nw_central || data.baseline)) nwCentralSeries.setData(data.nw_central || data.baseline);
+                if (nwUpperSeries && (data.nw_upper || data.upper_entry)) nwUpperSeries.setData(data.nw_upper || data.upper_entry);
+                if (nwLowerSeries && (data.nw_lower || data.lower_entry)) nwLowerSeries.setData(data.nw_lower || data.lower_entry);
                 if (stopSeries && data.active_stop) stopSeries.setData(data.active_stop);
+                if (tpSeries && data.active_tp) tpSeries.setData(data.active_tp);
 
                 // Update default legend strip from last values
-                if (data.baseline && data.baseline.length > 0) {
-                    const lastB = data.baseline[data.baseline.length - 1].value;
-                    document.getElementById('legBaseline').textContent = '$' + lastB.toFixed(2);
+                if (data.vwap && data.vwap.length > 0) {
+                    const lastVw = data.vwap[data.vwap.length - 1].value;
+                    const el = document.getElementById('legVwap');
+                    if (el) el.textContent = '$' + lastVw.toFixed(2);
                 }
-                if (data.upper_entry && data.upper_entry.length > 0) {
-                    const lastU = data.upper_entry[data.upper_entry.length - 1].value;
-                    document.getElementById('legUpper').textContent = '$' + lastU.toFixed(2);
+                if ((data.nw_central || data.baseline) && (data.nw_central || data.baseline).length > 0) {
+                    const arr = data.nw_central || data.baseline;
+                    const lastNc = arr[arr.length - 1].value;
+                    const el = document.getElementById('legNwCentral');
+                    if (el) el.textContent = '$' + lastNc.toFixed(2);
                 }
-                if (data.lower_entry && data.lower_entry.length > 0) {
-                    const lastL = data.lower_entry[data.lower_entry.length - 1].value;
-                    document.getElementById('legLower').textContent = '$' + lastL.toFixed(2);
+                if ((data.nw_upper || data.upper_entry) && (data.nw_upper || data.upper_entry).length > 0) {
+                    const arr = data.nw_upper || data.upper_entry;
+                    const lastNu = arr[arr.length - 1].value;
+                    const el = document.getElementById('legNwUpper');
+                    if (el) el.textContent = '$' + lastNu.toFixed(2);
+                }
+                if ((data.nw_lower || data.lower_entry) && (data.nw_lower || data.lower_entry).length > 0) {
+                    const arr = data.nw_lower || data.lower_entry;
+                    const lastNl = arr[arr.length - 1].value;
+                    const el = document.getElementById('legNwLower');
+                    if (el) el.textContent = '$' + lastNl.toFixed(2);
                 }
                 if (data.active_stop && data.active_stop.length > 0) {
                     const lastS = data.active_stop[data.active_stop.length - 1].value;
-                    document.getElementById('legStop').textContent = '$' + lastS.toFixed(2);
+                    const el = document.getElementById('legStop');
+                    if (el) el.textContent = '$' + lastS.toFixed(2);
                 } else {
-                    document.getElementById('legStop').textContent = 'Nenhum';
+                    const el = document.getElementById('legStop');
+                    if (el) el.textContent = 'Nenhum';
+                }
+                if (data.active_tp && data.active_tp.length > 0) {
+                    const lastTp = data.active_tp[data.active_tp.length - 1].value;
+                    const el = document.getElementById('legTp');
+                    if (el) el.textContent = '$' + lastTp.toFixed(2);
+                } else {
+                    const el = document.getElementById('legTp');
+                    if (el) el.textContent = 'Nenhum';
                 }
 
-                // Update Prop Desk Cascade HUD
-                if (data.cascade) {
-                    const c = data.cascade;
-                    const macroEl = document.getElementById('hudMacroBias');
-                    if (macroEl) {
-                        const isBull = c.d_bias === 1 || c.d_bias === 'ALTA';
-                        const isBear = c.d_bias === -1 || c.d_bias === 'BAIXA';
-                        macroEl.textContent = isBull ? 'ALTA (BULL)' : (isBear ? 'BAIXA (BEAR)' : 'NEUTRO');
-                        macroEl.className = 'cascade-hud-val ' + (isBull ? 'c-up' : (isBear ? 'c-down' : ''));
-                    }
-
-                    const ctxEl = document.getElementById('hudCtxBias');
-                    if (ctxEl) {
-                        const isBull = c.h_bias === 1 || c.h_bias === 'ALTA';
-                        const isBear = c.h_bias === -1 || c.h_bias === 'BAIXA';
-                        ctxEl.textContent = isBull ? 'ALTA' : (isBear ? 'BAIXA' : 'NEUTRO');
-                        ctxEl.className = 'cascade-hud-val ' + (isBull ? 'c-up' : (isBear ? 'c-down' : ''));
-                    }
-
-                    const convLEl = document.getElementById('hudConvLong');
-                    if (convLEl) convLEl.textContent = (c.size_factor_long * 100).toFixed(0) + '%';
-
-                    const convSEl = document.getElementById('hudConvShort');
-                    if (convSEl) convSEl.textContent = (c.size_factor_short * 100).toFixed(0) + '%';
-
-                    const slopeEl = document.getElementById('hudSlopeExec');
-                    if (slopeEl) {
-                        slopeEl.textContent = c.norm_slope.toFixed(3);
-                        slopeEl.className = 'cascade-hud-val ' + (c.norm_slope > 0 ? 'c-up' : (c.norm_slope < 0 ? 'c-down' : ''));
-                    }
-
-                    const stEl = document.getElementById('hudScoreStruct');
-                    if (stEl) stEl.textContent = c.structure_score_long.toFixed(2);
-
-                    const momEl = document.getElementById('hudScoreMom');
-                    if (momEl) momEl.textContent = c.momentum_score_long.toFixed(2);
-
-                    const exhEl = document.getElementById('hudScoreExh');
-                    if (exhEl) exhEl.textContent = c.exhaustion_score_long.toFixed(2);
-
-                    const chopEl = document.getElementById('hudScoreChop');
-                    if (chopEl) chopEl.textContent = c.chop_score.toFixed(2);
-
-                    const scLongEl = document.getElementById('hudScoreLong');
-                    if (scLongEl) scLongEl.textContent = c.confluence_score_long.toFixed(2);
-
-                    const scShortEl = document.getElementById('hudScoreShort');
-                    if (scShortEl) scShortEl.textContent = c.confluence_score_short.toFixed(2);
-                }
-
-                if (data.cascade_config) {
-                    lastCascadeConfig = data.cascade_config;
-                    const threshEl = document.getElementById('hudMinThreshold');
-                    if (threshEl) threshEl.textContent = data.cascade_config.min_confluence.toFixed(2);
-
-                    const badge = document.getElementById('cascadeActiveBadge');
-                    if (badge) {
-                        badge.textContent = data.cascade_config.enabled ? 'MOTOR ATIVO' : 'DESATIVADO';
-                        badge.className = 'badge ' + (data.cascade_config.enabled ? 'badge-live' : 'badge-status status-stopped');
-                    }
+                if (data.mera_config) {
+                    lastMeraConfig = data.mera_config;
                 }
 
                 const chartStatus = document.getElementById('chartStatusBadge');
                 if (chartStatus) {
-                    chartStatus.textContent = `${data.symbol || 'BINANCE'} ${data.interval || '15m'} • AO VIVO`;
+                    chartStatus.textContent = `${data.symbol || 'ETHUSDT'} ${data.interval || '5m'} • AO VIVO`;
                 }
 
             } catch (err) {
@@ -3244,65 +3245,66 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
             }
         }
 
-        /* MODAL DE CONFIGURAÇÃO DA CASCATA MTF */
-        function openCascadeModal() {
-            if (lastCascadeConfig) {
-                document.getElementById('cascadeEnabledInput').checked = !!lastCascadeConfig.enabled;
-                document.getElementById('cascadeLengthInput').value = lastCascadeConfig.length || 100;
-                document.getElementById('cascadeSdEntryInput').value = (lastCascadeConfig.sd_entry || 2.0).toFixed(1);
-                document.getElementById('cascadeMinSlopeInput').value = (lastCascadeConfig.min_norm_slope || 0.10).toFixed(2);
-                document.getElementById('cascadeMinConfInput').value = (lastCascadeConfig.min_confluence || 0.70).toFixed(2);
-                document.getElementById('cascadeAtrLenInput').value = lastCascadeConfig.atr_len || 22;
-                document.getElementById('cascadeAtrMultInput').value = (lastCascadeConfig.atr_mult || 3.0).toFixed(1);
-                document.getElementById('cascadeRiskInput').value = (lastCascadeConfig.risk_per_trade || 2.0).toFixed(1);
-                document.getElementById('cascadeUseMtfInput').checked = !!lastCascadeConfig.use_mtf;
-                document.getElementById('cascadeUseIgnitionInput').checked = !!lastCascadeConfig.use_ignition;
+        let lastMeraConfig = null;
+
+        /* MODAL DE CONFIGURAÇÃO DO MOTOR MERA */
+        function openMeraModal() {
+            if (lastMeraConfig) {
+                document.getElementById('meraEnabledInput').checked = !!lastMeraConfig.enabled;
+                document.getElementById('meraBandwidthInput').value = (lastMeraConfig.bandwidth || 8.0).toFixed(1);
+                document.getElementById('meraMultInput').value = (lastMeraConfig.mult || 2.2).toFixed(1);
+                document.getElementById('meraLookbackInput').value = lastMeraConfig.lookback || 150;
+                document.getElementById('meraVolumeMultInput').value = (lastMeraConfig.volume_mult || 0.85).toFixed(2);
+                document.getElementById('meraMinWickInput').value = (lastMeraConfig.min_wick_ratio || 0.30).toFixed(2);
+                document.getElementById('meraSlPercentInput').value = (lastMeraConfig.sl_percent || 0.80).toFixed(2);
+                document.getElementById('meraTpPartialInput').value = (lastMeraConfig.tp_partial_percent || 1.00).toFixed(2);
+                document.getElementById('meraTpFinalInput').value = (lastMeraConfig.tp_final_percent || 2.00).toFixed(2);
             }
-            document.getElementById('cascadeStatusMsg').textContent = '';
-            document.getElementById('cascadeModal').classList.add('active');
+            document.getElementById('meraStatusMsg').textContent = '';
+            document.getElementById('meraModal').classList.add('active');
         }
 
-        function closeCascadeModal(e) {
+        function closeMeraModal(e) {
             if (e && e.target !== e.currentTarget && e.target.tagName !== 'BUTTON') return;
-            document.getElementById('cascadeModal').classList.remove('active');
+            document.getElementById('meraModal').classList.remove('active');
         }
 
-        async function applyCascadeConfig() {
-            const btn = document.getElementById('btnConfirmCascade');
-            const msg = document.getElementById('cascadeStatusMsg');
+        async function applyMeraConfig() {
+            const btn = document.getElementById('btnConfirmMera');
+            const msg = document.getElementById('meraStatusMsg');
             btn.disabled = true;
-            btn.textContent = 'Gravando parâmetros...';
+            btn.textContent = 'Gravando parâmetros MERA...';
             msg.textContent = '';
 
             const payload = {
-                enabled: document.getElementById('cascadeEnabledInput').checked,
-                length: parseInt(document.getElementById('cascadeLengthInput').value) || 100,
-                sd_entry: parseFloat(document.getElementById('cascadeSdEntryInput').value) || 2.0,
-                min_norm_slope: parseFloat(document.getElementById('cascadeMinSlopeInput').value) || 0.10,
-                use_ignition: document.getElementById('cascadeUseIgnitionInput').checked,
-                ign_atr_mult: 1.5,
-                ign_vol_mult: 1.8,
-                use_mtf: document.getElementById('cascadeUseMtfInput').checked,
-                min_confluence: parseFloat(document.getElementById('cascadeMinConfInput').value) || 0.70,
-                atr_len: parseInt(document.getElementById('cascadeAtrLenInput').value) || 22,
-                atr_mult: parseFloat(document.getElementById('cascadeAtrMultInput').value) || 3.0,
-                risk_per_trade: parseFloat(document.getElementById('cascadeRiskInput').value) || 2.0
+                enabled: document.getElementById('meraEnabledInput').checked,
+                bandwidth: parseFloat(document.getElementById('meraBandwidthInput').value) || 8.0,
+                mult: parseFloat(document.getElementById('meraMultInput').value) || 2.2,
+                lookback: parseInt(document.getElementById('meraLookbackInput').value) || 150,
+                volume_mult: parseFloat(document.getElementById('meraVolumeMultInput').value) || 0.85,
+                min_wick_ratio: parseFloat(document.getElementById('meraMinWickInput').value) || 0.30,
+                sl_percent: parseFloat(document.getElementById('meraSlPercentInput').value) || 0.80,
+                tp_partial_percent: parseFloat(document.getElementById('meraTpPartialInput').value) || 1.00,
+                tp_final_percent: parseFloat(document.getElementById('meraTpFinalInput').value) || 2.00,
+                be_offset_percent: 0.15,
+                max_trades_24h: 8,
+                cooldown_candles: 2
             };
 
             try {
-                const res = await fetch('/api/action/update_cascade_config', {
+                const res = await fetch('/api/action/update_mera_config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
                 const data = await res.json();
                 if (data.success) {
-                    lastCascadeConfig = data.config;
-                    msg.innerHTML = '<span class="c-up" style="font-weight:700;">✔ Parâmetros da Cascata atualizados!</span>';
-                    showToast('Parâmetros da Cascata salvos com sucesso!', 'success');
+                    lastMeraConfig = data.config;
+                    msg.innerHTML = '<span class="c-up" style="font-weight:700;">✔ Parâmetros MERA atualizados com sucesso!</span>';
+                    showToast('Parâmetros do Motor MERA salvos!', 'success');
                     setTimeout(() => {
-                        document.getElementById('cascadeModal').classList.remove('active');
-                        fetchChartData();
+                        document.getElementById('meraModal').classList.remove('active');
+                        fetchStatus();
                     }, 500);
                 } else {
                     msg.innerHTML = '<span class="c-down" style="font-weight:700;">✖ Falha ao salvar</span>';
@@ -3313,7 +3315,7 @@ const DASHBOARD_HTML_CONTENT: &str = r##"<!DOCTYPE html>
                 showToast('Erro de rede: ' + err, 'error');
             } finally {
                 btn.disabled = false;
-                btn.textContent = 'Salvar e Aplicar';
+                btn.textContent = 'Salvar e Aplicar MERA';
             }
         }
 

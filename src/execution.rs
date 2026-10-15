@@ -26,8 +26,8 @@ impl ExecutionEngine {
     pub fn new(config: AppConfig) -> Self {
         let client = if !config.trading.paper_trading {
             Some(BinanceFuturesClient::new(
-                config.exchange.api_key.clone(),
-                config.exchange.api_secret.clone(),
+                config.exchange.get_api_key().to_string(),
+                config.exchange.get_api_secret().to_string(),
                 config.exchange.get_rest_url().to_string(),
             ))
         } else {
@@ -115,11 +115,11 @@ impl ExecutionEngine {
             }
         } else {
             // Modo Paper Trading
-            if self.config.trading.fetch_real_balance_on_paper && !self.config.exchange.api_key.trim().is_empty() {
+            if self.config.trading.fetch_real_balance_on_paper && !self.config.exchange.get_api_key().trim().is_empty() {
                 info!("Consultando carteira real na Binance para calibrar saldo inicial do Paper Trading...");
                 let query_client = BinanceFuturesClient::new(
-                    self.config.exchange.api_key.clone(),
-                    self.config.exchange.api_secret.clone(),
+                    self.config.exchange.get_api_key().to_string(),
+                    self.config.exchange.get_api_secret().to_string(),
                     self.config.exchange.get_rest_url().to_string(),
                 );
                 match query_client.get_account_wallet_info().await {
@@ -221,11 +221,11 @@ impl ExecutionEngine {
                 self.account.peak_balance = self.account.equity;
             }
             return Ok(Some(info));
-        } else if !self.config.exchange.api_key.trim().is_empty() {
+        } else if !self.config.exchange.get_api_key().trim().is_empty() {
             // Em paper trading, se as chaves da Binance foram informadas, consulta a carteira real
             let query_client = BinanceFuturesClient::new(
-                self.config.exchange.api_key.clone(),
-                self.config.exchange.api_secret.clone(),
+                self.config.exchange.get_api_key().to_string(),
+                self.config.exchange.get_api_secret().to_string(),
                 self.config.exchange.get_rest_url().to_string(),
             );
             if let Ok(info) = query_client.get_account_wallet_info().await {
@@ -270,7 +270,7 @@ impl ExecutionEngine {
                     };
                     let price_precision = self.config.risk.price_precision;
                     tokio::spawn(async move {
-                        let cid = format!("heal_sl_{}", Uuid::new_v4().simple());
+                        let cid = format!("hsl_{}", &Uuid::new_v4().simple().to_string()[..24]);
                         let res = client_clone
                             .place_stop_market_order(&symbol, side, calculated_sl, Some(cid), price_precision)
                             .await;

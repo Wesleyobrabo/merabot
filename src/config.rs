@@ -14,6 +14,8 @@ pub struct AppConfig {
     pub notifications: NotificationConfig,
     #[serde(default)]
     pub cascade: CascadeConfig,
+    #[serde(default)]
+    pub mera: MeraConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +51,22 @@ impl ExchangeConfig {
             "wss://stream.binancefuture.com/ws"
         } else {
             "wss://fstream.binance.com/ws"
+        }
+    }
+
+    pub fn get_api_key(&self) -> &str {
+        if self.testnet && !self.testnet_api_key.trim().is_empty() {
+            &self.testnet_api_key
+        } else {
+            &self.api_key
+        }
+    }
+
+    pub fn get_api_secret(&self) -> &str {
+        if self.testnet && !self.testnet_api_secret.trim().is_empty() {
+            &self.testnet_api_secret
+        } else {
+            &self.api_secret
         }
     }
 }
@@ -532,6 +550,87 @@ impl Default for AppConfig {
             },
             notifications: NotificationConfig::default(),
             cascade: CascadeConfig::default(),
+            mera: MeraConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeraConfig {
+    #[serde(default = "default_mera_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_mera_bandwidth")]
+    pub bandwidth: f64,
+    #[serde(default = "default_mera_mult")]
+    pub mult: f64,
+    #[serde(default = "default_mera_lookback")]
+    pub lookback: usize,
+    #[serde(default = "default_mera_volume_mult")]
+    pub volume_mult: f64,
+    #[serde(default = "default_mera_min_wick_ratio")]
+    pub min_wick_ratio: f64,
+    #[serde(default = "default_mera_sl_percent")]
+    pub sl_percent: f64,
+    #[serde(default = "default_mera_tp_partial_percent")]
+    pub tp_partial_percent: f64,
+    #[serde(default = "default_mera_tp_final_percent")]
+    pub tp_final_percent: f64,
+    #[serde(default = "default_mera_be_offset_percent")]
+    pub be_offset_percent: f64,
+    #[serde(default = "default_mera_max_trades_24h")]
+    pub max_trades_24h: usize,
+    #[serde(default = "default_mera_cooldown_candles")]
+    pub cooldown_candles: usize,
+    #[serde(default = "default_mera_partial_ratio")]
+    pub partial_ratio: f64,
+    #[serde(default = "default_mera_min_nw_spread")]
+    pub min_nw_spread: f64,
+    #[serde(default = "default_mera_max_volume_mult")]
+    pub max_volume_mult: f64,
+    #[serde(default = "default_mera_use_htf_trend")]
+    pub use_htf_trend: bool,
+    #[serde(default = "default_mera_ema_trend_period")]
+    pub ema_trend_period: usize,
+}
+
+fn default_mera_enabled() -> bool { true }
+fn default_mera_bandwidth() -> f64 { 8.0 }
+fn default_mera_mult() -> f64 { 2.2 }
+fn default_mera_lookback() -> usize { 150 }
+fn default_mera_volume_mult() -> f64 { 0.85 }
+fn default_mera_max_volume_mult() -> f64 { 2.5 }
+fn default_mera_min_wick_ratio() -> f64 { 0.30 }
+fn default_mera_sl_percent() -> f64 { 0.60 }
+fn default_mera_tp_partial_percent() -> f64 { 0.85 }
+fn default_mera_tp_final_percent() -> f64 { 2.00 }
+fn default_mera_be_offset_percent() -> f64 { 0.15 }
+fn default_mera_max_trades_24h() -> usize { 8 }
+fn default_mera_cooldown_candles() -> usize { 2 }
+fn default_mera_partial_ratio() -> f64 { 0.70 }
+fn default_mera_min_nw_spread() -> f64 { 0.0055 }
+fn default_mera_use_htf_trend() -> bool { true }
+fn default_mera_ema_trend_period() -> usize { 200 }
+
+impl Default for MeraConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_mera_enabled(),
+            bandwidth: default_mera_bandwidth(),
+            mult: default_mera_mult(),
+            lookback: default_mera_lookback(),
+            volume_mult: default_mera_volume_mult(),
+            max_volume_mult: default_mera_max_volume_mult(),
+            min_wick_ratio: default_mera_min_wick_ratio(),
+            sl_percent: default_mera_sl_percent(),
+            tp_partial_percent: default_mera_tp_partial_percent(),
+            tp_final_percent: default_mera_tp_final_percent(),
+            be_offset_percent: default_mera_be_offset_percent(),
+            max_trades_24h: default_mera_max_trades_24h(),
+            cooldown_candles: default_mera_cooldown_candles(),
+            partial_ratio: default_mera_partial_ratio(),
+            min_nw_spread: default_mera_min_nw_spread(),
+            use_htf_trend: default_mera_use_htf_trend(),
+            ema_trend_period: default_mera_ema_trend_period(),
         }
     }
 }

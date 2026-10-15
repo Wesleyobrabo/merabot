@@ -39,8 +39,8 @@ async fn main() -> Result<()> {
     info!("Risco por trade: {}% | Max Drawdown: {}%", config.risk.risk_per_trade_percent, config.risk.max_drawdown_percent);
 
     let rest_client = BinanceFuturesClient::new(
-        config.exchange.api_key.clone(),
-        config.exchange.api_secret.clone(),
+        config.exchange.get_api_key().to_string(),
+        config.exchange.get_api_secret().to_string(),
         config.exchange.get_rest_url().to_string(),
     );
 
@@ -84,6 +84,7 @@ async fn main() -> Result<()> {
 
     // Instancia os componentes centrais com as configs sincronizadas
     let mut strategy = PineSupertrendRsiStrategy::new(config.strategy.clone(), config.risk.clone());
+    strategy.mera_engine.set_config(config.mera.clone());
     if !initial_candles.is_empty() {
         strategy.warmup(&initial_candles);
     }

@@ -1,6 +1,7 @@
-// Rust, strategy.rs, Motor Único: Cascata Turbo MTF (OLS 100 + Bandas Adaptativas + Smart Ignition + Breakeven Dinâmico + Take Profit Parcial 50%)
-use crate::config::{CascadeConfig, RiskConfig, StrategyConfig};
+// Rust, strategy.rs, Motor MERA (Session VWAP + Nadaraya-Watson Envelope Scalping)
+use crate::config::{CascadeConfig, MeraConfig, RiskConfig, StrategyConfig};
 use crate::indicators::IndicatorEngine;
+use crate::mera::MeraEngine;
 use crate::types::{Candle, IndicatorValues, Position, PositionSide, Signal, SignalType};
 use tracing::info;
 
@@ -8,6 +9,7 @@ pub struct PineSupertrendRsiStrategy {
     pub config: StrategyConfig,
     pub risk_config: RiskConfig,
     pub engine: IndicatorEngine,
+    pub mera_engine: MeraEngine,
     pub trade_timestamps: Vec<i64>,
     pub last_indicator_values: IndicatorValues,
 }
@@ -23,11 +25,13 @@ impl PineSupertrendRsiStrategy {
             strategy_config.volume_sma_period,
         );
         engine.cascade_engine.set_config(strategy_config.cascade.clone());
+        let mera_engine = MeraEngine::new(MeraConfig::default());
 
         Self {
             config: strategy_config,
             risk_config,
             engine,
+            mera_engine,
             trade_timestamps: Vec::new(),
             last_indicator_values: IndicatorValues::default(),
         }
@@ -58,34 +62,43 @@ impl PineSupertrendRsiStrategy {
         if candles.is_empty() {
             return;
         }
+        self.mera_engine.warmup(candles);
+        self.last_indicator_values.mera = self.mera_engine.last_telemetry.clone();
+
         self.engine.cascade_engine.set_config(self.config.cascade.clone());
         let mut last_ind = None;
         for candle in candles {
             last_ind = Some(self.engine.update(candle));
         }
-        if let Some(ind) = last_ind {
+        if let Some(mut ind) = last_ind {
+            ind.mera = self.mera_engine.last_telemetry.clone();
             self.last_indicator_values = ind;
         }
 
-        let c = &self.last_indicator_values.cascade;
         info!(
-            "[WARMUP CASCATA TURBO] {} candles de 15m carregados | Baseline OLS 100: {:.2} | Bandas [{:.2} - {:.2}] | D1: {} | 4h: {} | Chop: {:.1}",
+            "[WARMUP MERA] {} candles carregados | VWAP: {:.2} | NW Central: {:.2} | NW Bandas: [{:.2} - {:.2}]",
             candles.len(),
-            c.baseline,
-            c.lower_entry,
-            c.upper_entry,
-            c.d_bias,
-            c.h_bias,
-            c.chop_val
+            self.last_indicator_values.mera.session_vwap,
+            self.last_indicator_values.mera.nw_central,
+            self.last_indicator_values.mera.nw_lower,
+            self.last_indicator_values.mera.nw_upper,
         );
     }
 
     pub fn on_candle(&mut self, candle: &Candle, current_position: &Position) -> Option<Signal> {
+        // 1. AVALIAÇÃO PRINCIPAL PELO MOTOR MERA (VWAP + NADARAYA-WATSON 5M)
+        let (mera_telem, mera_signal) = self.mera_engine.update(candle, current_position);
+        self.last_indicator_values.mera = mera_telem;
+
+        if let Some(sig) = mera_signal {
+            return Some(sig);
+        }
+
         let pos_entry = current_position.entry_price;
         let pos_side = current_position.side;
         let is_in_pos = pos_side != PositionSide::None && current_position.amount > 0.0;
 
-        // 1. CHECAGEM INTRABAR (TICK A TICK OU VELA ABERTA)
+        // 2. CHECAGEM INTRABAR (TICK A TICK OU VELA ABERTA)
         if !candle.is_closed {
             if is_in_pos {
                 let mut temp_engine = self.engine.clone();
@@ -104,7 +117,9 @@ impl PineSupertrendRsiStrategy {
                             reason: "Take Profit Parcial (+2.50%)".to_string(),
                             stop_loss: Some(pos_entry * 1.0025), // Já reposiciona restante no breakeven
                             take_profit: None,
+                            tp_partial: None,
                             partial_ratio: Some(0.5),
+                            size_factor: None,
                         });
                     }
 
@@ -132,7 +147,9 @@ impl PineSupertrendRsiStrategy {
                                 reason: format!("{} em {:.2}", reason, sl),
                                 stop_loss: None,
                                 take_profit: None,
+                                tp_partial: None,
                                 partial_ratio: None,
+                                size_factor: None,
                             });
                         }
                     }
@@ -148,7 +165,9 @@ impl PineSupertrendRsiStrategy {
                             reason: "Take Profit Parcial (+2.50%)".to_string(),
                             stop_loss: Some(pos_entry * 0.9975),
                             take_profit: None,
+                            tp_partial: None,
                             partial_ratio: Some(0.5),
+                            size_factor: None,
                         });
                     }
 
@@ -176,7 +195,9 @@ impl PineSupertrendRsiStrategy {
                                 reason: format!("{} em {:.2}", reason, sl),
                                 stop_loss: None,
                                 take_profit: None,
+                                tp_partial: None,
                                 partial_ratio: None,
+                                size_factor: None,
                             });
                         }
                     }
@@ -215,7 +236,9 @@ impl PineSupertrendRsiStrategy {
                             reason: format!("Cascade Trailing Stop fechado em {:.2}", sl),
                             stop_loss: None,
                             take_profit: None,
+                            tp_partial: None,
                             partial_ratio: None,
+                            size_factor: None,
                         });
                     }
                 }
@@ -237,7 +260,9 @@ impl PineSupertrendRsiStrategy {
                             reason: format!("Cascade Trailing Stop fechado em {:.2}", sl),
                             stop_loss: None,
                             take_profit: None,
+                            tp_partial: None,
                             partial_ratio: None,
+                            size_factor: None,
                         });
                     }
                 }
@@ -261,7 +286,9 @@ impl PineSupertrendRsiStrategy {
                 reason: format!("{} (Confluência: {:.2})", reason, c.confluence_score_long),
                 stop_loss: Some(stop_price),
                 take_profit: None,
+                tp_partial: None,
                 partial_ratio: None,
+                size_factor: Some(c.size_factor_long),
             });
         } else if c.setup_short {
             let stop_price = c.active_stop.unwrap_or(candle.close + (ind.atr * self.config.cascade.atr_mult)).max(candle.close * 1.015);
@@ -278,7 +305,9 @@ impl PineSupertrendRsiStrategy {
                 reason: format!("{} (Confluência: {:.2})", reason, c.confluence_score_short),
                 stop_loss: Some(stop_price),
                 take_profit: None,
+                tp_partial: None,
                 partial_ratio: None,
+                size_factor: Some(c.size_factor_short),
             });
         }
 

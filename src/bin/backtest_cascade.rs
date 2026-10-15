@@ -143,6 +143,8 @@ async fn run_simulation(
                     stop_loss: None,
                     take_profit: None,
                     partial_ratio: None,
+                    tp_partial: None,
+                    size_factor: None,
                 };
                 let _ = exec.process_signal(sig, &mut risk).await;
             }
@@ -182,6 +184,8 @@ async fn run_simulation(
                 stop_loss: None,
                 take_profit: None,
                 partial_ratio: None,
+                tp_partial: None,
+                size_factor: None,
             };
             let _ = exec.process_signal(sig, &mut risk).await;
         }

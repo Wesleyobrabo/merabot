@@ -136,7 +136,9 @@ async fn run_simulation(
                     reason: format!("Trailing Stop Intrabar em {:.4}", stop_price),
                     stop_loss: None,
                     take_profit: None,
+                    tp_partial: None,
                     partial_ratio: None,
+                    size_factor: None,
                 };
                 let _ = exec.process_signal(sig, &mut risk).await;
             }
@@ -198,7 +200,9 @@ async fn run_simulation(
                 reason: "Fechamento Fim do Mês (30/04 23:59)".to_string(),
                 stop_loss: None,
                 take_profit: None,
+                tp_partial: None,
                 partial_ratio: None,
+                size_factor: None,
             };
             let _ = exec.process_signal(sig, &mut risk).await;
         }

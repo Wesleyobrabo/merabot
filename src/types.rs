@@ -71,6 +71,8 @@ pub struct Position {
     pub stop_loss: Option<f64>,
     pub take_profit: Option<f64>,
     #[serde(default)]
+    pub tp_partial: Option<f64>,
+    #[serde(default)]
     pub liquidation_price: Option<f64>,
     #[serde(default)]
     pub max_loss_usdt: Option<f64>,
@@ -96,6 +98,7 @@ impl Position {
             leverage,
             stop_loss: None,
             take_profit: None,
+            tp_partial: None,
             liquidation_price: None,
             max_loss_usdt: None,
             distance_to_sl_pct: None,
@@ -199,7 +202,11 @@ pub struct Signal {
     pub stop_loss: Option<f64>,
     pub take_profit: Option<f64>,
     #[serde(default)]
+    pub tp_partial: Option<f64>,
+    #[serde(default)]
     pub partial_ratio: Option<f64>,
+    #[serde(default)]
+    pub size_factor: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -290,6 +297,30 @@ pub struct IndicatorValues {
     pub next_slot_cooldown_mins: Option<i64>,
     #[serde(default)]
     pub cascade: CascadeTelemetry,
+    #[serde(default)]
+    pub mera: MeraTelemetry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MeraTelemetry {
+    pub enabled: bool,
+    pub session_vwap: f64,
+    pub vwap_upper: f64,
+    pub vwap_lower: f64,
+    pub nw_central: f64,
+    pub nw_upper: f64,
+    pub nw_lower: f64,
+    pub nw_slope_pct: f64,
+    pub bias_bullish: bool,
+    pub bias_bearish: bool,
+    pub volume_ratio: f64,
+    pub is_volume_ok: bool,
+    pub setup_long: bool,
+    pub setup_short: bool,
+    pub signal_reason: String,
+    pub active_stop: Option<f64>,
+    pub tp_partial: Option<f64>,
+    pub tp_final: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -3,6 +3,7 @@ pub mod binance;
 pub mod config;
 pub mod execution;
 pub mod indicators;
+pub mod mera;
 pub mod notifier;
 pub mod risk;
 pub mod server;

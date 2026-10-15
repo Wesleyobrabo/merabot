@@ -422,6 +422,7 @@ impl BinanceFuturesClient {
                     leverage: lev,
                     stop_loss: None,
                     take_profit: None,
+                    tp_partial: None,
                     liquidation_price: None,
                     max_loss_usdt: None,
                     distance_to_sl_pct: None,
