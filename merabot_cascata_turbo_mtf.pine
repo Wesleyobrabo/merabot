@@ -194,40 +194,50 @@ var bool partial_taken = false
 
 in_long  = strategy.position_size > 0
 in_short = strategy.position_size < 0
+new_long_entry  = in_long and not in_long[1]
+new_short_entry = in_short and not in_short[1]
 
+// Ao abrir nova posição: trava preço de entrada e define stop inicial seguro
+if new_long_entry
+    entry_price_locked := strategy.position_avg_price
+    partial_taken := false
+    st_initial = (st_dir == 1 and st_line < entry_price_locked) ? st_line : (entry_price_locked - atr_val * atr_mult)
+    active_long_stop := math.min(st_initial, entry_price_locked * 0.985)
+
+if new_short_entry
+    entry_price_locked := strategy.position_avg_price
+    partial_taken := false
+    st_initial = (st_dir == -1 and st_line > entry_price_locked) ? st_line : (entry_price_locked + atr_val * atr_mult)
+    active_short_stop := math.max(st_initial, entry_price_locked * 1.015)
+
+// Durante a posição: trailing ratchet (nunca regride e só sobe a favor do trade)
 if in_long
-    if na(entry_price_locked)
-        entry_price_locked := strategy.position_avg_price
-    
-    // Parcial em +2.50%
+    // 1. Checagem de Take Profit Parcial (+2.50%)
     if not partial_taken and high >= entry_price_locked * (1.0 + tp_partial_p / 100.0)
         partial_taken := true
+
+    // 2. Trailing Stop Ratchet pelo Supertrend (só sobe se Supertrend for Bullish e estiver acima do stop anterior)
+    if st_dir == 1 and st_line < close
+        active_long_stop := math.max(nz(active_long_stop, entry_price_locked * 0.985), st_line)
     
-    // Stop Loss Supertrend com Ratchet
-    current_st_stop = st_dir == 1 ? st_line : entry_price_locked
-    active_long_stop := na(active_long_stop) ? current_st_stop : math.max(active_long_stop, current_st_stop)
-    
-    // Se parcial foi atingida, trava o Breakeven Dinâmico (+0.25%)
+    // 3. Breakeven Dinâmico: se parcial foi atingida, o stop é travado no mínimo em +0.25% de lucro
     if partial_taken
         be_floor = entry_price_locked * (1.0 + be_lock_pct / 100.0)
-        active_long_stop := math.max(active_long_stop, be_floor)
+        active_long_stop := math.max(nz(active_long_stop, be_floor), be_floor)
 
 else if in_short
-    if na(entry_price_locked)
-        entry_price_locked := strategy.position_avg_price
-        
-    // Parcial em +2.50% (preço cai 2.50%)
+    // 1. Checagem de Take Profit Parcial (+2.50%)
     if not partial_taken and low <= entry_price_locked * (1.0 - tp_partial_p / 100.0)
         partial_taken := true
-        
-    // Stop Loss Supertrend com Ratchet
-    current_st_stop = st_dir == -1 ? st_line : entry_price_locked
-    active_short_stop := na(active_short_stop) ? current_st_stop : math.min(active_short_stop, current_st_stop)
+
+    // 2. Trailing Stop Ratchet pelo Supertrend (só desce se Supertrend for Bearish e estiver abaixo do stop anterior)
+    if st_dir == -1 and st_line > close
+        active_short_stop := math.min(nz(active_short_stop, entry_price_locked * 1.015), st_line)
     
-    // Se parcial foi atingida, trava o Breakeven Dinâmico (+0.25%)
+    // 3. Breakeven Dinâmico: se parcial foi atingida, o stop é travado no teto em +0.25% de lucro
     if partial_taken
         be_ceiling = entry_price_locked * (1.0 - be_lock_pct / 100.0)
-        active_short_stop := math.min(active_short_stop, be_ceiling)
+        active_short_stop := math.min(nz(active_short_stop, be_ceiling), be_ceiling)
 
 else
     active_long_stop := na
@@ -239,34 +249,22 @@ else
 // 11. EXECUÇÃO DE ORDENS
 // ==============================================================================
 if entry_cond_long and not in_long and barstate.isconfirmed
-    init_stop = st_dir == 1 ? st_line : (close - atr_val * atr_mult)
-    init_stop := math.min(init_stop, close * 0.985)
-    active_long_stop := init_stop
-    entry_price_locked := close
-    partial_taken := false
-    
     qty_pct = 100.0 * size_factor_long
     strategy.entry("Long", strategy.long, qty=strategy.equity * (qty_pct / 100.0) / close, comment="ENTER LONG")
 
 if entry_cond_short and not in_short and barstate.isconfirmed
-    init_stop = st_dir == -1 ? st_line : (close + atr_val * atr_mult)
-    init_stop := math.max(init_stop, close * 1.015)
-    active_short_stop := init_stop
-    entry_price_locked := close
-    partial_taken := false
-    
     qty_pct = 100.0 * size_factor_short
     strategy.entry("Short", strategy.short, qty=strategy.equity * (qty_pct / 100.0) / close, comment="ENTER SHORT")
 
 // Ordens de Saída (Parcial 50% e Trailing Stop / Breakeven)
 if in_long
     tp_price = entry_price_locked * (1.0 + tp_partial_p / 100.0)
-    strategy.exit("TP Parcial Long", "Long", qty_percent=tp_ratio, limit=tp_price, comment="TP 50% (+2.5%)")
+    strategy.exit("TP Parcial Long", "Long", qty_percent=tp_ratio, limit=tp_price, stop=active_long_stop, comment_profit="TP 50% (+2.5%)", comment_loss="SL Long")
     strategy.exit("Trailing/BE Long", "Long", stop=active_long_stop, comment="STOP / BE")
 
 if in_short
     tp_price = entry_price_locked * (1.0 - tp_partial_p / 100.0)
-    strategy.exit("TP Parcial Short", "Short", qty_percent=tp_ratio, limit=tp_price, comment="TP 50% (+2.5%)")
+    strategy.exit("TP Parcial Short", "Short", qty_percent=tp_ratio, limit=tp_price, stop=active_short_stop, comment_profit="TP 50% (+2.5%)", comment_loss="SL Short")
     strategy.exit("Trailing/BE Short", "Short", stop=active_short_stop, comment="STOP / BE")
 
 // ==============================================================================
