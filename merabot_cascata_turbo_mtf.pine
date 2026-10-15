@@ -1,6 +1,6 @@
-//@version=5
+//@version=6
 strategy("MERABOT — CASCATA TURBO MTF (Prop Desk)", 
-         shorttitle="MERABOT_CASCADE", 
+         shorttitle="MERABOT_CASCADE_V6", 
          overlay=true, 
          initial_capital=1000, 
          default_qty_type=strategy.percent_of_equity, 
@@ -50,7 +50,7 @@ show_hud     = input.bool(true, "Exibir Tabela de Telemetria (HUD)", group=grp_t
 // ==============================================================================
 // 2. CÁLCULO DO CHOPPINESS INDEX & BANDAS ADAPTATIVAS
 // ==============================================================================
-calc_chop(len) =>
+calc_chop(int len) =>
     ci_atr = ta.atr(1)
     ci_sum = math.sum(ci_atr, len)
     ci_hi  = ta.highest(high, len)
@@ -85,11 +85,11 @@ lower_entry = baseline - (atr_val * adaptive_sd)
 // ==============================================================================
 // 5. FILTROS MULTI-TIMEFRAME (MACRO D1 + CONTEXTO 4H)
 // ==============================================================================
-f_calc_htf_bias(tf) =>
-    h_close   = request.security(syminfo.tickerid, tf, close, lookahead=barmerge.lookahead_off)
-    h_base    = request.security(syminfo.tickerid, tf, ta.linreg(close, len_ols, 0), lookahead=barmerge.lookahead_off)
-    h_base_3  = request.security(syminfo.tickerid, tf, ta.linreg(close, len_ols, 3), lookahead=barmerge.lookahead_off)
-    h_atr     = request.security(syminfo.tickerid, tf, ta.atr(atr_len), lookahead=barmerge.lookahead_off)
+f_calc_htf_bias(string tf) =>
+    h_close   = request.security(syminfo.tickerid, tf, close, lookahead=barmerge.lookahead_off, gaps=barmerge.gaps_off)
+    h_base    = request.security(syminfo.tickerid, tf, ta.linreg(close, len_ols, 0), lookahead=barmerge.lookahead_off, gaps=barmerge.gaps_off)
+    h_base_3  = request.security(syminfo.tickerid, tf, ta.linreg(close, len_ols, 3), lookahead=barmerge.lookahead_off, gaps=barmerge.gaps_off)
+    h_atr     = request.security(syminfo.tickerid, tf, ta.atr(atr_len), lookahead=barmerge.lookahead_off, gaps=barmerge.gaps_off)
     h_slope   = (h_base - h_base_3) / 3.0
     h_ns      = h_atr > 0 ? h_slope / h_atr : 0.0
     h_bias    = h_ns > min_ns ? 1 : (h_ns < -min_ns ? -1 : 0)
@@ -290,12 +290,12 @@ plotshape(ignition_short, title="Ignition Short", location=location.abovebar, co
 // ==============================================================================
 var table hud = table.new(position.top_right, 2, 9, bgcolor=color.new(#101826, 15), border_color=color.new(#2c384d, 50), border_width=1)
 
-f_bias_str(b) => b == 1 ? "ALTA (BULL)" : (b == -1 ? "BAIXA (BEAR)" : "NEUTRO")
-f_bias_col(b) => b == 1 ? color.green : (b == -1 ? color.red : color.gray)
+f_bias_str(int b) => b == 1 ? "ALTA (BULL)" : (b == -1 ? "BAIXA (BEAR)" : "NEUTRO")
+f_bias_col(int b) => b == 1 ? color.green : (b == -1 ? color.red : color.gray)
 
 if barstate.islast and show_hud
     table.cell(hud, 0, 0, "MERABOT CASCATA", bgcolor=color.new(#ffd60a, 20), text_color=color.yellow, text_size=size.small)
-    table.cell(hud, 1, 0, "STATUS V5", bgcolor=color.new(#ffd60a, 20), text_color=color.yellow, text_size=size.small)
+    table.cell(hud, 1, 0, "STATUS V6", bgcolor=color.new(#ffd60a, 20), text_color=color.yellow, text_size=size.small)
     
     table.cell(hud, 0, 1, "Macro D1 (Veto)", text_color=color.white, text_size=size.small)
     table.cell(hud, 1, 1, f_bias_str(d_bias), text_color=f_bias_col(d_bias), text_size=size.small)
