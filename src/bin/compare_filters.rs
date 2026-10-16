@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, unused_assignments)]
 use anyhow::Result;
 use binance_futures_bot::indicators::IndicatorEngine;
 use binance_futures_bot::types::{Candle, PositionSide};

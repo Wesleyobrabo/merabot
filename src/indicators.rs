@@ -382,6 +382,10 @@ impl NadarayaWatson {
     }
 
     pub fn update(&mut self, close: f64) -> (f64, f64, f64, f64) {
+        self.update_with_atr(close, 0.0)
+    }
+
+    pub fn update_with_atr(&mut self, close: f64, atr: f64) -> (f64, f64, f64, f64) {
         self.buffer.push(close);
         if self.buffer.len() > self.lookback + 20 {
             self.buffer.drain(0..self.buffer.len() - self.lookback);
@@ -407,7 +411,9 @@ impl NadarayaWatson {
             let w = self.weights[i];
             sum_mae += (price - central).abs() * w;
         }
-        let dev = if sum_w > 0.0 { (sum_mae / sum_w) * self.mult } else { 0.0 };
+        let raw_dev = if sum_w > 0.0 { (sum_mae / sum_w) * self.mult } else { 0.0 };
+        // Piso ATR anti-squeeze: previne estrangulamento excessivo em consolidações
+        let dev = if atr > 0.0 { raw_dev.max(atr * 1.25) } else { raw_dev };
 
         let upper = central + dev;
         let lower = central - dev;
@@ -1515,24 +1521,34 @@ impl MeraKineticTensor {
         let net_disp_macro = slice_macro.last().unwrap().3 - slice_macro.first().unwrap().3;
         let _pct_move_macro = net_disp_macro / slice_macro.first().unwrap().3.max(1.0);
 
-        // 1. Coeficiente Fractal Fast (Phi Fast)
+        // 1. Coeficiente Fractal Fast com Regularização de Tikhonov (Phi Fast)
         let net_disp_fast = (slice_fast.last().unwrap().3 - slice_fast.first().unwrap().3).abs();
         let mut gross_path_fast = 0.0;
+        let mut sum_range_fast = 0.0;
         for i in 1..slice_fast.len() {
             gross_path_fast += (slice_fast[i].3 - slice_fast[i - 1].3).abs();
         }
-        let phi_fast = if gross_path_fast > 1e-6 { net_disp_fast / gross_path_fast } else { 0.0 };
+        for item in slice_fast {
+            sum_range_fast += (item.1 - item.2).max(1e-5);
+        }
+        let avg_range_fast = sum_range_fast / slice_fast.len() as f64;
+        let tikhonov_floor = 0.35 * avg_range_fast;
+        let phi_fast = if gross_path_fast + tikhonov_floor > 1e-6 {
+            net_disp_fast / (gross_path_fast + tikhonov_floor)
+        } else {
+            0.0
+        };
 
-        // 2. Volume Ponderado Fast
+        // 2. Volume com Bulk Volume Classification (BVC) - captura absorções em pavios
         let mut v_plus_fast = 0.0;
         let mut v_minus_fast = 0.0;
         for item in slice_fast {
-            let (o, _h, _l, c, vol, _vw) = *item;
-            if c > o {
-                v_plus_fast += vol * (c - o);
-            } else if o > c {
-                v_minus_fast += vol * (o - c);
-            }
+            let (_o, h, l, c, vol, _vw) = *item;
+            let range = (h - l).max(1e-5);
+            let buy_ratio = ((c - l) / range).clamp(0.0, 1.0);
+            let sell_ratio = ((h - c) / range).clamp(0.0, 1.0);
+            v_plus_fast += vol * buy_ratio;
+            v_minus_fast += vol * sell_ratio;
         }
         let delta_vol_fast = if v_plus_fast + v_minus_fast > 1e-6 {
             (v_plus_fast - v_minus_fast) / (v_plus_fast + v_minus_fast)
@@ -1550,20 +1566,30 @@ impl MeraKineticTensor {
         let i_vwap_fast = sum_vwap_fast / slice_fast.len() as f64;
         let tensor_fast = phi_fast * (0.50 * delta_vol_fast + 0.50 * i_vwap_fast.tanh());
 
-        // 4. Coeficiente Fractal Slow (24h)
+        // 4. Coeficiente Fractal Slow (24h) com Regularização
         let net_disp_slow = slice_slow.last().unwrap().3 - slice_slow.first().unwrap().3;
         let mut gross_path_slow = 0.0;
+        let mut sum_range_slow = 0.0;
         for i in 1..slice_slow.len() {
             gross_path_slow += (slice_slow[i].3 - slice_slow[i - 1].3).abs();
         }
-        let phi_slow = if gross_path_slow > 1e-6 { net_disp_slow.abs() / gross_path_slow } else { 0.0 };
+        for item in slice_slow {
+            sum_range_slow += (item.1 - item.2).max(1e-5);
+        }
+        let avg_range_slow = sum_range_slow / slice_slow.len() as f64;
+        let tikhonov_slow = 0.35 * avg_range_slow;
+        let phi_slow = if gross_path_slow + tikhonov_slow > 1e-6 {
+            net_disp_slow.abs() / (gross_path_slow + tikhonov_slow)
+        } else {
+            0.0
+        };
         let pct_move_slow = net_disp_slow / slice_slow.first().unwrap().3.max(1.0);
         let tensor_slow = phi_slow * (pct_move_slow * 50.0).clamp(-1.0, 1.0);
 
         // Tensor Global Unificado
         let tensor = 0.60 * tensor_fast + 0.40 * tensor_slow;
 
-        // 5. Velocidade VWAP (1 hora / 12 velas)
+        // 5. Velocidade VWAP (1 hora / 12 velas) com proteção de reset à meia-noite UTC
         let vwap_vel = if slice_fast.len() >= 12 {
             let curr_vw = slice_fast.last().unwrap().5;
             let prev_vw = slice_fast[slice_fast.len() - 12].5;
@@ -1572,7 +1598,14 @@ impl MeraKineticTensor {
                 sum_tr += (slice_fast[i].1 - slice_fast[i].2).max(1e-4);
             }
             let avg_tr = (sum_tr / 12.0).max(1e-4);
-            (curr_vw - prev_vw) / avg_tr
+            let raw_vel = (curr_vw - prev_vw) / avg_tr;
+            // Se cruzou a virada de sessão UTC (00:00), a VWAP sofre salto artificial:
+            if raw_vel.abs() > 3.0 && slice_fast.len() >= 6 {
+                let p6 = slice_fast[slice_fast.len() - 6].5;
+                ((curr_vw - p6) / (avg_tr * 0.5)).clamp(-1.5, 1.5)
+            } else {
+                raw_vel.clamp(-2.0, 2.0)
+            }
         } else {
             0.0
         };
@@ -1603,29 +1636,37 @@ impl MeraKineticTensor {
         let is_trend_bull = tensor_slow >= 0.04 && tensor_fast >= 0.03 && vwap_vel >= 0.0;
         let is_trend_bear = tensor_slow <= -0.04 && tensor_fast <= -0.03 && vwap_vel <= 0.0;
 
-        // Permissões Direcionais Estritas MKT 2.0
-        // Long:
-        // - Bloqueia se 24h for negativo além de -0.50% (evita faca caindo na Semana 2)
-        // - Bloqueia se 24h já subiu além de +3.50% (teto de exaustão parabólica anti-FOMO)
-        let is_long_allowed = pct_move_slow >= -0.005
-            && pct_move_slow <= 0.035
-            && tensor_slow >= -0.02
-            && tensor_fast >= -0.04
+        // Permissões Direcionais MKT 2.2 (com proteção bimodal e trava de exaustão)
+        let is_long_allowed = pct_move_slow >= -0.006
+            && pct_move_slow <= 0.028
+            && tensor_slow >= -0.025
+            && tensor_fast >= -0.045
             && vwap_vel >= -0.15
             && !is_whipsaw;
 
-        // Short:
-        // - Bloqueia se 24h for positivo além de +0.50% (evita short em rali explosivo)
-        // - Bloqueia se 24h já caiu além de -3.50% (piso de exaustão de venda)
-        let is_short_allowed = pct_move_slow <= 0.005
-            && pct_move_slow >= -0.035
-            && tensor_slow <= 0.02
-            && tensor_fast <= 0.04
+        let is_short_allowed = pct_move_slow <= 0.006
+            && pct_move_slow >= -0.028
+            && tensor_slow <= 0.025
+            && tensor_fast <= 0.045
             && vwap_vel <= 0.15
             && !is_whipsaw;
 
-        // 9. Dimensionamento Cinético
-        let size_factor_long = if is_trend_bull {
+        // 9. Dimensionamento Cinético com atenuação sigmoidal próxima aos limites de exaustão
+        let exhaustion_long = if pct_move_slow > 0.020 {
+            let excess = (pct_move_slow - 0.020) / 0.018;
+            (1.0 - 0.75 * excess).clamp(0.25, 1.0)
+        } else {
+            1.0
+        };
+
+        let exhaustion_short = if pct_move_slow < -0.020 {
+            let excess = (-pct_move_slow - 0.020) / 0.018;
+            (1.0 - 0.75 * excess).clamp(0.25, 1.0)
+        } else {
+            1.0
+        };
+
+        let base_size_long = if is_trend_bull {
             1.00
         } else if tensor_slow <= 0.0 {
             0.50
@@ -1633,13 +1674,16 @@ impl MeraKineticTensor {
             0.50 + 0.50 * (tensor / 0.08).clamp(0.0, 1.0)
         };
 
-        let size_factor_short = if is_trend_bear {
+        let base_size_short = if is_trend_bear {
             1.00
         } else if tensor_slow >= 0.0 {
             0.50
         } else {
             0.50 + 0.50 * ((-tensor) / 0.08).clamp(0.0, 1.0)
         };
+
+        let size_factor_long = base_size_long * exhaustion_long;
+        let size_factor_short = base_size_short * exhaustion_short;
 
         // 10. Alvos Dinâmicos (Runner para Tendência, Cirúrgico para Mean Reversion)
         let (tp_partial_pct, tp_final_pct, sl_pct) = if is_trend_bull || is_trend_bear {

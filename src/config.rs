@@ -591,6 +591,28 @@ pub struct MeraConfig {
     pub use_htf_trend: bool,
     #[serde(default = "default_mera_ema_trend_period")]
     pub ema_trend_period: usize,
+    #[serde(default = "default_mera_use_bimodal")]
+    pub use_bimodal: bool,
+    #[serde(default = "default_mera_enable_ple")]
+    pub enable_ple: bool,
+    #[serde(default = "default_mera_ple_fade")]
+    pub ple_fade_traps: bool,
+    #[serde(default = "default_mera_ple_retest")]
+    pub ple_retest_trend: bool,
+    #[serde(default = "default_mera_use_hybrid")]
+    pub use_hybrid: bool,
+    #[serde(default = "default_mera_chop_sl_percent")]
+    pub chop_sl_percent: f64,
+    #[serde(default = "default_mera_chop_tp_partial_percent")]
+    pub chop_tp_partial_percent: f64,
+    #[serde(default = "default_mera_chop_tp_final_percent")]
+    pub chop_tp_final_percent: f64,
+    #[serde(default = "default_mera_chop_be_offset_percent")]
+    pub chop_be_offset_percent: f64,
+    #[serde(default = "default_mera_enable_drift_filter")]
+    pub enable_drift_filter: bool,
+    #[serde(default = "default_mera_drift_min_hours")]
+    pub drift_min_hours: f64,
 }
 
 fn default_mera_enabled() -> bool { true }
@@ -599,17 +621,28 @@ fn default_mera_mult() -> f64 { 2.2 }
 fn default_mera_lookback() -> usize { 150 }
 fn default_mera_volume_mult() -> f64 { 0.85 }
 fn default_mera_max_volume_mult() -> f64 { 2.5 }
-fn default_mera_min_wick_ratio() -> f64 { 0.30 }
-fn default_mera_sl_percent() -> f64 { 0.60 }
-fn default_mera_tp_partial_percent() -> f64 { 0.85 }
-fn default_mera_tp_final_percent() -> f64 { 2.00 }
-fn default_mera_be_offset_percent() -> f64 { 0.15 }
-fn default_mera_max_trades_24h() -> usize { 8 }
-fn default_mera_cooldown_candles() -> usize { 2 }
+fn default_mera_min_wick_ratio() -> f64 { 0.20 }
+fn default_mera_sl_percent() -> f64 { 1.25 }
+fn default_mera_tp_partial_percent() -> f64 { 2.80 }
+fn default_mera_tp_final_percent() -> f64 { 6.50 }
+fn default_mera_be_offset_percent() -> f64 { 0.25 }
+fn default_mera_max_trades_24h() -> usize { 10 }
+fn default_mera_cooldown_candles() -> usize { 6 }
 fn default_mera_partial_ratio() -> f64 { 0.70 }
-fn default_mera_min_nw_spread() -> f64 { 0.0055 }
+fn default_mera_min_nw_spread() -> f64 { 0.0030 }
 fn default_mera_use_htf_trend() -> bool { true }
 fn default_mera_ema_trend_period() -> usize { 200 }
+fn default_mera_use_bimodal() -> bool { true }
+fn default_mera_enable_ple() -> bool { true }
+fn default_mera_ple_fade() -> bool { true }
+fn default_mera_ple_retest() -> bool { false }
+fn default_mera_use_hybrid() -> bool { true }
+fn default_mera_chop_sl_percent() -> f64 { 1.15 }
+fn default_mera_chop_tp_partial_percent() -> f64 { 1.05 }
+fn default_mera_chop_tp_final_percent() -> f64 { 1.75 }
+fn default_mera_chop_be_offset_percent() -> f64 { 0.20 }
+fn default_mera_enable_drift_filter() -> bool { true }
+fn default_mera_drift_min_hours() -> f64 { 8.0 }
 
 impl Default for MeraConfig {
     fn default() -> Self {
@@ -631,6 +664,17 @@ impl Default for MeraConfig {
             min_nw_spread: default_mera_min_nw_spread(),
             use_htf_trend: default_mera_use_htf_trend(),
             ema_trend_period: default_mera_ema_trend_period(),
+            use_bimodal: default_mera_use_bimodal(),
+            enable_ple: default_mera_enable_ple(),
+            ple_fade_traps: default_mera_ple_fade(),
+            ple_retest_trend: default_mera_ple_retest(),
+            use_hybrid: default_mera_use_hybrid(),
+            chop_sl_percent: default_mera_chop_sl_percent(),
+            chop_tp_partial_percent: default_mera_chop_tp_partial_percent(),
+            chop_tp_final_percent: default_mera_chop_tp_final_percent(),
+            chop_be_offset_percent: default_mera_chop_be_offset_percent(),
+            enable_drift_filter: default_mera_enable_drift_filter(),
+            drift_min_hours: default_mera_drift_min_hours(),
         }
     }
 }

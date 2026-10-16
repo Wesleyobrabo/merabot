@@ -9,6 +9,10 @@ use serde_json::Value;
 use sha2::Sha256;
 use tracing::{debug, info, warn};
 
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
 fn precision_from_step(step: f64) -> u32 {
     if step <= 0.0 {
         return 2;
@@ -31,6 +35,7 @@ pub struct BinanceFuturesClient {
     api_key: String,
     api_secret: String,
     base_url: String,
+    time_offset: Arc<AtomicI64>,
 }
 
 impl BinanceFuturesClient {
@@ -44,6 +49,8 @@ impl BinanceFuturesClient {
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
+            .timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(4))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -52,7 +59,26 @@ impl BinanceFuturesClient {
             api_key,
             api_secret,
             base_url,
+            time_offset: Arc::new(AtomicI64::new(0)),
         }
+    }
+
+    pub async fn sync_server_time(&self) -> Result<i64> {
+        let start = Utc::now().timestamp_millis();
+        let server_time = self.get_server_time().await?;
+        let end = Utc::now().timestamp_millis();
+        let local_mid = (start + end) / 2;
+        let offset = server_time - local_mid;
+        self.time_offset.store(offset, Ordering::Relaxed);
+        info!(
+            "[SINCRONIA RELÓGIO BINANCE] Server: {} | Local: {} | Offset: {}ms",
+            server_time, local_mid, offset
+        );
+        Ok(offset)
+    }
+
+    pub fn get_timestamp(&self) -> i64 {
+        Utc::now().timestamp_millis() + self.time_offset.load(Ordering::Relaxed)
     }
 
     fn sign(&self, query: &str) -> String {
@@ -60,6 +86,14 @@ impl BinanceFuturesClient {
             .expect("HMAC can take key of any size");
         mac.update(query.as_bytes());
         hex::encode(mac.finalize().into_bytes())
+    }
+
+    fn build_signed_query(&self, params: &str) -> String {
+        let ts = self.get_timestamp();
+        let delimiter = if params.is_empty() { "" } else { "&" };
+        let full_query = format!("{}{}timestamp={}&recvWindow=10000", params, delimiter, ts);
+        let signature = self.sign(&full_query);
+        format!("{}&signature={}", full_query, signature)
     }
 
     pub async fn get_server_time(&self) -> Result<i64> {
@@ -300,10 +334,8 @@ impl BinanceFuturesClient {
     }
 
     pub async fn set_leverage(&self, symbol: &str, leverage: u32) -> Result<()> {
-        let timestamp = Utc::now().timestamp_millis();
-        let query = format!("symbol={}&leverage={}&timestamp={}", symbol, leverage, timestamp);
-        let signature = self.sign(&query);
-        let url = format!("{}/fapi/v1/leverage?{}&signature={}", self.base_url, query, signature);
+        let signed_query = self.build_signed_query(&format!("symbol={}&leverage={}", symbol, leverage));
+        let url = format!("{}/fapi/v1/leverage?{}", self.base_url, signed_query);
 
         let resp = self.client.post(&url).send().await?.json::<Value>().await?;
         if resp.get("code").is_some() && resp["code"] != 200 {
@@ -314,10 +346,8 @@ impl BinanceFuturesClient {
     }
 
     pub async fn set_margin_type(&self, symbol: &str, margin_type: &str) -> Result<()> {
-        let timestamp = Utc::now().timestamp_millis();
-        let query = format!("symbol={}&marginType={}&timestamp={}", symbol, margin_type, timestamp);
-        let signature = self.sign(&query);
-        let url = format!("{}/fapi/v1/marginType?{}&signature={}", self.base_url, query, signature);
+        let signed_query = self.build_signed_query(&format!("symbol={}&marginType={}", symbol, margin_type));
+        let url = format!("{}/fapi/v1/marginType?{}", self.base_url, signed_query);
 
         let resp = self.client.post(&url).send().await?.json::<Value>().await?;
         if let Some(code) = resp.get("code").and_then(|c| c.as_i64()) {
@@ -333,10 +363,8 @@ impl BinanceFuturesClient {
     }
 
     pub async fn get_account_wallet_info(&self) -> Result<WalletInfo> {
-        let timestamp = Utc::now().timestamp_millis();
-        let query = format!("timestamp={}", timestamp);
-        let signature = self.sign(&query);
-        let url = format!("{}/fapi/v2/balance?{}&signature={}", self.base_url, query, signature);
+        let signed_query = self.build_signed_query("");
+        let url = format!("{}/fapi/v2/balance?{}", self.base_url, signed_query);
 
         let resp = self.client.get(&url).send().await?.json::<Value>().await?;
         let arr = resp.as_array().context("Resposta de saldo nao e array")?;
@@ -379,10 +407,8 @@ impl BinanceFuturesClient {
     }
 
     pub async fn get_position_risk(&self, symbol: &str) -> Result<Option<Position>> {
-        let timestamp = Utc::now().timestamp_millis();
-        let query = format!("symbol={}&timestamp={}", symbol, timestamp);
-        let signature = self.sign(&query);
-        let url = format!("{}/fapi/v2/positionRisk?{}&signature={}", self.base_url, query, signature);
+        let signed_query = self.build_signed_query(&format!("symbol={}", symbol));
+        let url = format!("{}/fapi/v2/positionRisk?{}", self.base_url, signed_query);
 
         let resp = self.client.get(&url).send().await?.json::<Value>().await?;
         let arr = resp.as_array().context("Resposta de positionRisk nao e array")?;
@@ -445,28 +471,27 @@ impl BinanceFuturesClient {
         client_order_id: Option<String>,
         qty_precision: u32,
     ) -> Result<Value> {
-        let timestamp = Utc::now().timestamp_millis();
         let side_str = match side {
             OrderSide::Buy => "BUY",
             OrderSide::Sell => "SELL",
         };
         let qty_fmt = format!("{:.*}", qty_precision as usize, quantity);
 
-        let mut query = format!(
-            "symbol={}&side={}&type=MARKET&quantity={}&timestamp={}",
-            symbol, side_str, qty_fmt, timestamp
+        let mut params = format!(
+            "symbol={}&side={}&type=MARKET&quantity={}",
+            symbol, side_str, qty_fmt
         );
 
         if reduce_only {
-            query.push_str("&reduceOnly=true");
+            params.push_str("&reduceOnly=true");
         }
 
         if let Some(cid) = client_order_id {
-            query.push_str(&format!("&newClientOrderId={}", cid));
+            params.push_str(&format!("&newClientOrderId={}", cid));
         }
 
-        let signature = self.sign(&query);
-        let url = format!("{}/fapi/v1/order?{}&signature={}", self.base_url, query, signature);
+        let signed_query = self.build_signed_query(&params);
+        let url = format!("{}/fapi/v1/order?{}", self.base_url, signed_query);
 
         let resp = self.client.post(&url).send().await?.json::<Value>().await?;
         if let Some(code) = resp.get("code") {
@@ -487,24 +512,23 @@ impl BinanceFuturesClient {
         client_order_id: Option<String>,
         price_precision: u32,
     ) -> Result<Value> {
-        let timestamp = Utc::now().timestamp_millis();
         let side_str = match side {
             OrderSide::Buy => "BUY",
             OrderSide::Sell => "SELL",
         };
         let price_fmt = format!("{:.*}", price_precision as usize, stop_price);
 
-        let mut query = format!(
-            "symbol={}&side={}&type=STOP_MARKET&stopPrice={}&closePosition=true&timestamp={}",
-            symbol, side_str, price_fmt, timestamp
+        let mut params = format!(
+            "symbol={}&side={}&type=STOP_MARKET&stopPrice={}&closePosition=true",
+            symbol, side_str, price_fmt
         );
 
         if let Some(cid) = client_order_id {
-            query.push_str(&format!("&newClientOrderId={}", cid));
+            params.push_str(&format!("&newClientOrderId={}", cid));
         }
 
-        let signature = self.sign(&query);
-        let url = format!("{}/fapi/v1/order?{}&signature={}", self.base_url, query, signature);
+        let signed_query = self.build_signed_query(&params);
+        let url = format!("{}/fapi/v1/order?{}", self.base_url, signed_query);
 
         let resp = self.client.post(&url).send().await?.json::<Value>().await?;
         if let Some(code) = resp.get("code") {
@@ -525,24 +549,23 @@ impl BinanceFuturesClient {
         client_order_id: Option<String>,
         price_precision: u32,
     ) -> Result<Value> {
-        let timestamp = Utc::now().timestamp_millis();
         let side_str = match side {
             OrderSide::Buy => "BUY",
             OrderSide::Sell => "SELL",
         };
         let price_fmt = format!("{:.*}", price_precision as usize, stop_price);
 
-        let mut query = format!(
-            "symbol={}&side={}&type=TAKE_PROFIT_MARKET&stopPrice={}&closePosition=true&timestamp={}",
-            symbol, side_str, price_fmt, timestamp
+        let mut params = format!(
+            "symbol={}&side={}&type=TAKE_PROFIT_MARKET&stopPrice={}&closePosition=true",
+            symbol, side_str, price_fmt
         );
 
         if let Some(cid) = client_order_id {
-            query.push_str(&format!("&newClientOrderId={}", cid));
+            params.push_str(&format!("&newClientOrderId={}", cid));
         }
 
-        let signature = self.sign(&query);
-        let url = format!("{}/fapi/v1/order?{}&signature={}", self.base_url, query, signature);
+        let signed_query = self.build_signed_query(&params);
+        let url = format!("{}/fapi/v1/order?{}", self.base_url, signed_query);
 
         let resp = self.client.post(&url).send().await?.json::<Value>().await?;
         if let Some(code) = resp.get("code") {
@@ -556,10 +579,8 @@ impl BinanceFuturesClient {
     }
 
     pub async fn cancel_all_open_orders(&self, symbol: &str) -> Result<()> {
-        let timestamp = Utc::now().timestamp_millis();
-        let query = format!("symbol={}&timestamp={}", symbol, timestamp);
-        let signature = self.sign(&query);
-        let url = format!("{}/fapi/v1/allOpenOrders?{}&signature={}", self.base_url, query, signature);
+        let signed_query = self.build_signed_query(&format!("symbol={}", symbol));
+        let url = format!("{}/fapi/v1/allOpenOrders?{}", self.base_url, signed_query);
 
         let resp = self.client.delete(&url).send().await?.json::<Value>().await?;
         info!("Todas as ordens abertas para {} foram canceladas: {:?}", symbol, resp);
@@ -567,10 +588,8 @@ impl BinanceFuturesClient {
     }
 
     pub async fn get_user_trades(&self, symbol: &str, limit: usize) -> Result<Vec<Value>> {
-        let timestamp = Utc::now().timestamp_millis();
-        let query = format!("symbol={}&limit={}&timestamp={}", symbol, limit, timestamp);
-        let signature = self.sign(&query);
-        let url = format!("{}/fapi/v1/userTrades?{}&signature={}", self.base_url, query, signature);
+        let signed_query = self.build_signed_query(&format!("symbol={}&limit={}", symbol, limit));
+        let url = format!("{}/fapi/v1/userTrades?{}", self.base_url, signed_query);
 
         let resp = self.client.get(&url).send().await?.json::<Value>().await?;
         if let Some(arr) = resp.as_array() {

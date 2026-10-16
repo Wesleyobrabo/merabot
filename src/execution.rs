@@ -20,6 +20,7 @@ pub struct ExecutionEngine {
     pub last_candle: Option<Candle>,
     pub notifier: Notifier,
     pub storage: StorageManager,
+    pub last_reconcile_ms: i64,
 }
 
 impl ExecutionEngine {
@@ -36,12 +37,14 @@ impl ExecutionEngine {
 
         let storage = StorageManager::new("data");
         let initial_balance = config.trading.initial_paper_balance;
-        let position = Position::new(config.trading.symbol.clone(), config.trading.leverage);
         let notifier = Notifier::new(config.notifications.clone());
 
-        // Recupera historico e estado salvo em disco se existirem
+        // Recupera historico, estado e posicao aberta salvos em disco se existirem
         let trade_history = storage.load_trades();
         let account = storage.load_account_state().unwrap_or_else(|| AccountState::new(initial_balance));
+        let position = storage
+            .load_position()
+            .unwrap_or_else(|| Position::new(config.trading.symbol.clone(), config.trading.leverage));
 
         Self {
             config,
@@ -52,6 +55,7 @@ impl ExecutionEngine {
             last_candle: None,
             notifier,
             storage,
+            last_reconcile_ms: 0,
         }
     }
 
@@ -68,12 +72,17 @@ impl ExecutionEngine {
             last_candle: None,
             notifier,
             storage,
+            last_reconcile_ms: 0,
         }
     }
 
     pub async fn init(&mut self) -> Result<()> {
         if let Some(ref client) = self.client {
             info!("Inicializando conexao live com Binance Futures...");
+
+            if let Err(e) = client.sync_server_time().await {
+                warn!("Aviso: Falha ao sincronizar relogio no ExecutionEngine: {}", e);
+            }
 
             // Sincroniza alavancagem e margem
             let _ = client
@@ -147,61 +156,69 @@ impl ExecutionEngine {
         Ok(())
     }
 
-    pub async fn reconcile_live_position(&mut self) -> Result<()> {
+    pub async fn reconcile_live_position(&mut self, force: bool) -> Result<()> {
         let client = match self.client {
             Some(ref c) => c.clone(),
             None => return Ok(()),
         };
 
-        if self.position.amount > 0.0 {
-            if let Ok(Some(live_pos)) = client.get_position_risk(&self.config.trading.symbol).await {
-                if live_pos.amount == 0.0 {
-                    // Posicao foi fechada diretamente na Binance via Stop Loss ou Take Profit nativo
-                    warn!(
-                        "RECONCILIACAO: Posicao {:?} em {} fechou diretamente na Binance! Processando encerramento...",
-                        self.position.side, self.config.trading.symbol
-                    );
-                    let exit_price = self.last_candle.as_ref().map(|c| c.close).unwrap_or(self.position.current_price);
-                    let pnl = match self.position.side {
-                        PositionSide::Long => (exit_price - self.position.entry_price) * self.position.amount,
-                        PositionSide::Short => (self.position.entry_price - exit_price) * self.position.amount,
-                        PositionSide::None => 0.0,
-                    };
-                    let side = match self.position.side {
-                        PositionSide::Long => OrderSide::Sell,
-                        PositionSide::Short => OrderSide::Buy,
-                        PositionSide::None => OrderSide::Sell,
-                    };
+        if self.position.amount <= 0.0 {
+            return Ok(());
+        }
 
-                    let entry_price = self.position.entry_price;
-                    let qty = self.position.amount;
+        let now = Utc::now().timestamp_millis();
+        if !force && (now - self.last_reconcile_ms < 5000) {
+            return Ok(());
+        }
+        self.last_reconcile_ms = now;
 
-                    self.record_trade(
-                        side,
-                        entry_price,
-                        exit_price,
-                        qty,
-                        pnl,
-                        "Stop Loss / Take Profit Nativo Executado na Binance".to_string(),
-                    ).await;
+        if let Ok(Some(live_pos)) = client.get_position_risk(&self.config.trading.symbol).await {
+            if live_pos.amount == 0.0 {
+                // Posicao foi fechada diretamente na Binance via Stop Loss ou Take Profit nativo
+                warn!(
+                    "RECONCILIACAO: Posicao {:?} em {} fechou diretamente na Binance! Processando encerramento...",
+                    self.position.side, self.config.trading.symbol
+                );
+                let exit_price = self.last_candle.as_ref().map(|c| c.close).unwrap_or(self.position.current_price);
+                let pnl = match self.position.side {
+                    PositionSide::Long => (exit_price - self.position.entry_price) * self.position.amount,
+                    PositionSide::Short => (self.position.entry_price - exit_price) * self.position.amount,
+                    PositionSide::None => 0.0,
+                };
+                let side = match self.position.side {
+                    PositionSide::Long => OrderSide::Sell,
+                    PositionSide::Short => OrderSide::Buy,
+                    PositionSide::None => OrderSide::Sell,
+                };
 
-                    // Cancela quaisquer ordens residuais na corretora
-                    let _ = client.cancel_all_open_orders(&self.config.trading.symbol).await;
+                let entry_price = self.position.entry_price;
+                let qty = self.position.amount;
 
-                    self.position.side = PositionSide::None;
-                    self.position.amount = 0.0;
-                    self.position.entry_price = 0.0;
-                    self.position.unrealized_pnl = 0.0;
-                    self.position.stop_loss = None;
-                    self.position.take_profit = None;
-                } else {
-                    let prev_sl = self.position.stop_loss;
-                    self.position.current_price = live_pos.current_price;
-                    self.position.unrealized_pnl = live_pos.unrealized_pnl;
-                    if self.position.stop_loss.is_none() {
-                        self.position.stop_loss = prev_sl;
-                        self.ensure_active_stop_loss();
-                    }
+                self.record_trade(
+                    side,
+                    entry_price,
+                    exit_price,
+                    qty,
+                    pnl,
+                    "Stop Loss / Take Profit Nativo Executado na Binance".to_string(),
+                ).await;
+
+                // Cancela quaisquer ordens residuais na corretora
+                let _ = client.cancel_all_open_orders(&self.config.trading.symbol).await;
+
+                self.position.side = PositionSide::None;
+                self.position.amount = 0.0;
+                self.position.entry_price = 0.0;
+                self.position.unrealized_pnl = 0.0;
+                self.position.stop_loss = None;
+                self.position.take_profit = None;
+            } else {
+                let prev_sl = self.position.stop_loss;
+                self.position.current_price = live_pos.current_price;
+                self.position.unrealized_pnl = live_pos.unrealized_pnl;
+                if self.position.stop_loss.is_none() {
+                    self.position.stop_loss = prev_sl;
+                    self.ensure_active_stop_loss();
                 }
             }
         }
@@ -210,7 +227,7 @@ impl ExecutionEngine {
 
     pub async fn sync_live_balance(&mut self) -> Result<Option<crate::types::WalletInfo>> {
         // Primeiro reconcilia posicao aberta para evitar dessincronizacao de PnL
-        let _ = self.reconcile_live_position().await;
+        let _ = self.reconcile_live_position(true).await;
 
         if let Some(ref client) = self.client {
             let info = client.get_account_wallet_info().await?;
@@ -399,24 +416,46 @@ impl ExecutionEngine {
                             info!("Ordem Long executada com preco medio real: {:.2}", executed_price);
                         }
 
-                        // Blindagem de Risco: Stop Loss obrigatório na abertura
+                        // Blindagem de Risco: Stop Loss obrigatório na abertura com retry
                         let sl_pct = self.config.risk.stop_loss_percent.max(0.5);
                         let sl_target = signal.stop_loss.unwrap_or_else(|| executed_price * (1.0 - (sl_pct / 100.0)));
                         let sl_cid = format!("sl_{}", Uuid::new_v4().simple());
-                        let _ = client
-                            .place_stop_market_order(
+                        let mut sl_placed = false;
+
+                        for attempt in 1..=3 {
+                            match client
+                                .place_stop_market_order(
+                                    &self.config.trading.symbol,
+                                    OrderSide::Sell,
+                                    sl_target,
+                                    Some(sl_cid.clone()),
+                                    self.config.risk.price_precision,
+                                )
+                                .await
+                            {
+                                Ok(_) => {
+                                    sl_placed = true;
+                                    break;
+                                }
+                                Err(e) => {
+                                    warn!("[SL RETRY {}/3] Falha ao registrar Stop Loss na Binance: {}", attempt, e);
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+                                }
+                            }
+                        }
+
+                        if !sl_placed {
+                            tracing::error!("FALHA CRÍTICA: Stop Loss LONG não registrado na Binance após 3 tentativas!");
+                            self.notifier.notify_error(
                                 &self.config.trading.symbol,
-                                OrderSide::Sell,
-                                sl_target,
-                                Some(sl_cid),
-                                self.config.risk.price_precision,
-                            )
-                            .await;
+                                &format!("FALHA CRÍTICA: Stop Loss de proteção LONG ({:.2}) não foi registrado na Binance!", sl_target),
+                            );
+                        }
 
                         // Priority 1: Posiciona Take Profit nativo TAKE_PROFIT_MARKET na exchange
                         if let Some(tp) = signal.take_profit {
                             let tp_cid = format!("tp_{}", Uuid::new_v4().simple());
-                            let _ = client
+                            if let Err(e) = client
                                 .place_take_profit_market_order(
                                     &self.config.trading.symbol,
                                     OrderSide::Sell,
@@ -424,7 +463,10 @@ impl ExecutionEngine {
                                     Some(tp_cid),
                                     self.config.risk.price_precision,
                                 )
-                                .await;
+                                .await
+                            {
+                                warn!("Aviso: Falha ao posicionar Take Profit na Binance: {}", e);
+                            }
                         }
                     }
 
@@ -456,6 +498,8 @@ impl ExecutionEngine {
                         self.config.trading.leverage,
                         self.config.trading.paper_trading,
                     );
+
+                    let _ = self.storage.save_position(&self.position);
                 }
             }
             SignalType::OpenShort => {
@@ -498,24 +542,46 @@ impl ExecutionEngine {
                             info!("Ordem Short executada com preco medio real: {:.2}", executed_price);
                         }
 
-                        // Blindagem de Risco: Stop Loss obrigatório na abertura
+                        // Blindagem de Risco: Stop Loss obrigatório na abertura com retry
                         let sl_pct = self.config.risk.stop_loss_percent.max(0.5);
                         let sl_target = signal.stop_loss.unwrap_or_else(|| executed_price * (1.0 + (sl_pct / 100.0)));
                         let sl_cid = format!("sl_{}", Uuid::new_v4().simple());
-                        let _ = client
-                            .place_stop_market_order(
+                        let mut sl_placed = false;
+
+                        for attempt in 1..=3 {
+                            match client
+                                .place_stop_market_order(
+                                    &self.config.trading.symbol,
+                                    OrderSide::Buy,
+                                    sl_target,
+                                    Some(sl_cid.clone()),
+                                    self.config.risk.price_precision,
+                                )
+                                .await
+                            {
+                                Ok(_) => {
+                                    sl_placed = true;
+                                    break;
+                                }
+                                Err(e) => {
+                                    warn!("[SL RETRY {}/3] Falha ao registrar Stop Loss na Binance: {}", attempt, e);
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+                                }
+                            }
+                        }
+
+                        if !sl_placed {
+                            tracing::error!("FALHA CRÍTICA: Stop Loss SHORT não registrado na Binance após 3 tentativas!");
+                            self.notifier.notify_error(
                                 &self.config.trading.symbol,
-                                OrderSide::Buy,
-                                sl_target,
-                                Some(sl_cid),
-                                self.config.risk.price_precision,
-                            )
-                            .await;
+                                &format!("FALHA CRÍTICA: Stop Loss de proteção SHORT ({:.2}) não foi registrado na Binance!", sl_target),
+                            );
+                        }
 
                         // Priority 1: Posiciona Take Profit nativo TAKE_PROFIT_MARKET na exchange
                         if let Some(tp) = signal.take_profit {
                             let tp_cid = format!("tp_{}", Uuid::new_v4().simple());
-                            let _ = client
+                            if let Err(e) = client
                                 .place_take_profit_market_order(
                                     &self.config.trading.symbol,
                                     OrderSide::Buy,
@@ -523,7 +589,10 @@ impl ExecutionEngine {
                                     Some(tp_cid),
                                     self.config.risk.price_precision,
                                 )
-                                .await;
+                                .await
+                            {
+                                warn!("Aviso: Falha ao posicionar Take Profit na Binance: {}", e);
+                            }
                         }
                     }
 
@@ -555,6 +624,8 @@ impl ExecutionEngine {
                         self.config.trading.leverage,
                         self.config.trading.paper_trading,
                     );
+
+                    let _ = self.storage.save_position(&self.position);
                 }
             }
             SignalType::CloseLong => {
@@ -848,6 +919,7 @@ impl ExecutionEngine {
         // Priority 4: Persistencia em disco
         let _ = self.storage.save_trades(&self.trade_history);
         let _ = self.storage.save_account_state(&self.account);
+        let _ = self.storage.save_position(&self.position);
     }
 
     pub async fn emergency_close_all(&mut self) -> Result<()> {
@@ -896,6 +968,7 @@ impl ExecutionEngine {
         self.position.unrealized_pnl = 0.0;
         self.position.stop_loss = None;
         self.position.take_profit = None;
+        let _ = self.storage.save_position(&self.position);
 
         Ok(())
     }

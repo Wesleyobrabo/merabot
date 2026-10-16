@@ -227,6 +227,20 @@ impl Notifier {
         });
     }
 
+    pub fn notify_error(&self, symbol: &str, error_msg: &str) {
+        if !self.config.enabled {
+            return;
+        }
+        let msg = format!(
+            "🚨 <b>ALERTA DE ERRO CRÍTICO - {}</b>\n\
+            ━━━━━━━━━━━━━━━━━━━━\n\
+            <b>Mensagem:</b> {}\n\
+            <b>Atenção:</b> Verifique sua conta e posições imediatamente!",
+            symbol, error_msg
+        );
+        self.broadcast(msg);
+    }
+
     fn broadcast(&self, html_text: String) {
         let config = Arc::clone(&self.config);
         let client = self.client.clone();

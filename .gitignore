@@ -2,4 +2,4 @@
 config.toml
 .env
 *.log
-data/backtest_*
+data/

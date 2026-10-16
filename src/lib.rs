@@ -1,8 +1,11 @@
 pub mod auth;
 pub mod binance;
 pub mod config;
+pub mod drift_filter;
 pub mod execution;
 pub mod indicators;
+pub mod lateral_scalper;
+pub mod liquidity_trap;
 pub mod mera;
 pub mod notifier;
 pub mod risk;

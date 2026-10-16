@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, unused_assignments)]
 // src/bin/optimize.rs - Testes Avançados para Solana 15M: Sessão Multi-Trade vs 24/7 Rolling Breakout
 use anyhow::{Context, Result};
 use chrono::{DateTime, Datelike, Timelike};

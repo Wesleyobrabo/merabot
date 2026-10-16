@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, unused_assignments)]
 // diagnose.rs - Simulador e Diagnóstico da Estratégia Gold / Session Breakout 15M (WillyAlgoTrader)
 use anyhow::{Context, Result};
 use chrono::{DateTime, Datelike, Timelike};

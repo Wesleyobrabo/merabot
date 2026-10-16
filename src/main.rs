@@ -44,6 +44,10 @@ async fn main() -> Result<()> {
         config.exchange.get_rest_url().to_string(),
     );
 
+    if let Err(e) = rest_client.sync_server_time().await {
+        warn!("Aviso: Nao foi possivel sincronizar relogio com a Binance ({}). Utilizando relogio local.", e);
+    }
+
     // 1. Extração dinâmica das regras de lote, precisão, nocional e teto da Binance baseadas no par
     info!("Consultando regras operacionais do par {} na Binance...", config.trading.symbol);
     let mut symbol_rules_opt = None;
@@ -222,42 +226,63 @@ async fn main() -> Result<()> {
 
     info!("Bot operacional. Escutando fluxo de mercado da Binance Futures...");
 
-    // Loop principal de processamento de mercado
-    while let Some(candle) = candle_rx.recv().await {
-        let current_status = *state_status.read().await;
-        if current_status != BotStatus::Running {
-            // Continua atualizando precos para dashboard, mas nao gera nem executa ordens novas
-            let mut exec = state_execution.write().await;
-            let mut risk = state_risk.write().await;
-            exec.update_candle(&candle, &mut risk);
-            continue;
-        }
+    // Loop principal de processamento de mercado com Graceful Shutdown
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("Sinal de interrupção (Ctrl+C) recebido! Iniciando encerramento gracioso...");
+                let exec = state_execution.read().await;
+                let _ = exec.storage.save_trades(&exec.trade_history);
+                let _ = exec.storage.save_account_state(&exec.account);
+                let _ = exec.storage.save_position(&exec.position);
+                info!("Estado e posições persistidos com segurança no disco. Encerrando bot.");
+                break;
+            }
+            maybe_candle = candle_rx.recv() => {
+                let candle = match maybe_candle {
+                    Some(c) => c,
+                    None => {
+                        warn!("Canal de candles encerrado. Finalizando loop principal.");
+                        break;
+                    }
+                };
 
-        // 1. Atualiza preco, reconcilia execucoes nativas da Binance e recalcula PnL
-        {
-            let mut exec = state_execution.write().await;
-            let mut risk = state_risk.write().await;
-            let _ = exec.reconcile_live_position().await;
-            exec.update_candle(&candle, &mut risk);
-        }
+                let current_status = *state_status.read().await;
+                if current_status != BotStatus::Running {
+                    // Continua atualizando precos para dashboard, mas nao gera nem executa ordens novas
+                    let mut exec = state_execution.write().await;
+                    let mut risk = state_risk.write().await;
+                    exec.update_candle(&candle, &mut risk);
+                    continue;
+                }
 
-        // 2. Avalia sinal da estrategia
-        let current_pos = {
-            let exec = state_execution.read().await;
-            exec.position.clone()
-        };
+                // 1. Atualiza preco, reconcilia execucoes nativas da Binance e recalcula PnL
+                {
+                    let mut exec = state_execution.write().await;
+                    let mut risk = state_risk.write().await;
+                    let _ = exec.reconcile_live_position(candle.is_closed).await;
+                    exec.update_candle(&candle, &mut risk);
+                }
 
-        let signal_opt = {
-            let mut strat = state_strategy.write().await;
-            strat.on_candle(&candle, &current_pos)
-        };
+                // 2. Avalia sinal da estrategia
+                let current_pos = {
+                    let exec = state_execution.read().await;
+                    exec.position.clone()
+                };
 
-        // 3. Executa sinal se emitido
-        if let Some(signal) = signal_opt {
-            let mut exec = state_execution.write().await;
-            let mut risk = state_risk.write().await;
-            if let Err(e) = exec.process_signal(signal, &mut risk).await {
-                error!("Erro ao processar sinal de execucao: {}", e);
+                let signal_opt = {
+                    let mut strat = state_strategy.write().await;
+                    strat.on_candle(&candle, &current_pos)
+                };
+
+                // 3. Executa sinal se emitido
+                if let Some(signal) = signal_opt {
+                    let mut exec = state_execution.write().await;
+                    let mut risk = state_risk.write().await;
+                    if let Err(e) = exec.process_signal(signal, &mut risk).await {
+                        error!("Erro ao processar sinal de execucao: {}", e);
+                    }
+                }
             }
         }
     }

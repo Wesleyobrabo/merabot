@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, unused_assignments)]
 // language: Rust, file: src/bin/backtest_mera.rs, target: Windows 11, MSVC
 // Backtest Real Binance Futures USD-M: Motor MERA (Session VWAP + Nadaraya-Watson Envelope 5m)
 // Período: Mês de Abril Inteiro (01/04 a 30/04 - 30 Dias Contínuos de Mercado)
@@ -53,6 +54,19 @@ async fn fetch_month_candles(
     start_time: i64,
     end_time: i64,
 ) -> Result<Vec<Candle>> {
+    let cache_dir = std::path::Path::new("data");
+    let cache_file = cache_dir.join(format!("cache_{}_{}_{}.json", symbol, start_time, end_time));
+    if cache_file.exists() {
+        if let Ok(data) = std::fs::read_to_string(&cache_file) {
+            if let Ok(cached) = serde_json::from_str::<Vec<Candle>>(&data) {
+                if !cached.is_empty() {
+                    println!("  [CACHE LOCAL] {} candles carregados de {:?}", cached.len(), cache_file);
+                    return Ok(cached);
+                }
+            }
+        }
+    }
+
     let mut current_start = start_time;
     let mut candles = Vec::new();
 
@@ -109,6 +123,11 @@ async fn fetch_month_candles(
         tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
     }
     println!(" Concluído!");
+
+    let _ = std::fs::create_dir_all(&cache_dir);
+    if let Ok(serialized) = serde_json::to_string(&candles) {
+        let _ = std::fs::write(&cache_file, serialized);
+    }
 
     Ok(candles)
 }
@@ -439,10 +458,17 @@ async fn main() -> Result<()> {
     let eur_to_usdt = 1.08;
 
     let args: Vec<String> = std::env::args().collect();
+    let is_august = args.iter().any(|a| a == "--august" || a == "august" || a == "agosto" || a == "-aug");
     let is_october = args.iter().any(|a| a == "--october" || a == "october" || a == "oct" || a == "outubro");
     let is_april = args.iter().any(|a| a == "--april" || a == "april" || a == "abril" || a == "-a");
 
-    let (month_name, start_sep_ms, end_sep_ms) = if is_october {
+    let (month_name, start_sep_ms, end_sep_ms) = if is_august {
+        (
+            "AGOSTO COMPLETO (31 DIAS)",
+            1785542400000i64, // 01/08/2026 00:00:00 UTC
+            1788220799999i64, // 31/08/2026 23:59:59 UTC
+        )
+    } else if is_october {
         (
             "OUTUBRO (01/10 até Agora em Tempo Real)",
             1790812800000i64, // 01/10/2026 00:00:00 UTC
@@ -576,7 +602,15 @@ async fn main() -> Result<()> {
     println!(" PROGRESSÃO SEMANAL — {} (Modo 5x / Banca €200)", month_name);
     println!("================================================================================");
 
-    let weeks: Vec<(&str, i64, i64)> = if is_october {
+    let weeks: Vec<(&str, i64, i64)> = if is_august {
+        vec![
+            ("Semana 1 (01/08 a 07/08)", start_sep_ms, start_sep_ms + 7 * 86400 * 1000),
+            ("Semana 2 (08/08 a 14/08)", start_sep_ms + 7 * 86400 * 1000, start_sep_ms + 14 * 86400 * 1000),
+            ("Semana 3 (15/08 a 21/08)", start_sep_ms + 14 * 86400 * 1000, start_sep_ms + 21 * 86400 * 1000),
+            ("Semana 4 (22/08 a 28/08)", start_sep_ms + 21 * 86400 * 1000, start_sep_ms + 28 * 86400 * 1000),
+            ("Semana 5 (29/08 a 31/08)", start_sep_ms + 28 * 86400 * 1000, end_sep_ms + 1000),
+        ]
+    } else if is_october {
         vec![
             ("Semana 1 (01/10 a 07/10)", start_sep_ms, start_sep_ms + 7 * 86400 * 1000),
             ("Semana 2 (08/10 a 14/10)", start_sep_ms + 7 * 86400 * 1000, start_sep_ms + 14 * 86400 * 1000),
