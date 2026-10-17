@@ -33,7 +33,7 @@ pub struct AuthState {
 impl AuthState {
     pub fn new(password: &str) -> Self {
         let password_hash: [u8; 32] = Sha256::digest(password.as_bytes()).into();
-        // Token de sessao derivado da senha: trocar a senha invalida todas as sessoes
+        // Token de sessão derivado da senha: trocar a senha invalida todas as sessões
         let session_token = hex::encode(Sha256::digest(format!("bot-session-v1|{}", password).as_bytes()));
         Self {
             password_hash,
@@ -154,44 +154,34 @@ pub async fn login_post(State(state): State<AppState>, Form(form): Form<LoginFor
 
 fn login_page(error: Option<&str>) -> String {
     let err_html = error
-        .map(|e| format!("<p class=\"err\">{}</p>", e))
+        .map(|e| format!("<div class=\"error\">{}</div>", e))
         .unwrap_or_default();
     format!(
         r##"<!DOCTYPE html>
-<html lang="pt-BR">
+<html>
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>Acesso ao Bot</title>
-<style>
-  * {{ box-sizing: border-box; }}
-  body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-         background: radial-gradient(circle at 30% 20%, #1b2340 0%, #0b0e17 60%);
-         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color:#e6e9f2; }}
-  form {{ width:min(360px, 90vw); padding:32px 28px; border-radius:18px;
-          background: rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.10);
-          backdrop-filter: blur(14px); box-shadow: 0 20px 60px rgba(0,0,0,0.5); }}
-  h1 {{ margin:0 0 6px; font-size:1.3rem; }}
-  .sub {{ margin:0 0 22px; font-size:.85rem; color:#8b93ad; }}
-  input {{ width:100%; padding:14px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.14);
-           background: rgba(0,0,0,0.35); color:#fff; font-size:1rem; outline:none; }}
-  input:focus {{ border-color:#5b8cff; box-shadow:0 0 0 3px rgba(91,140,255,0.25); }}
-  button {{ width:100%; margin-top:14px; padding:14px; border:0; border-radius:12px; cursor:pointer;
-            font-size:1rem; font-weight:600; color:#fff; background: linear-gradient(135deg,#5b8cff,#8a5bff);
-            transition: transform .15s, filter .15s; }}
-  button:hover {{ filter:brightness(1.1); transform:translateY(-1px); }}
-  .err {{ margin:12px 0 0; color:#ff6b7a; font-size:.9rem; }}
-</style>
+    <meta charset="UTF-8">
+    <title>Binance Futures Bot - Login</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f0f0f0; }}
+        .login-box {{ background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+        h1 {{ margin-top: 0; color: #333; }}
+        input {{ width: 100%; padding: 0.5rem; margin: 0.5rem 0; border: 1px solid #ddd; border-radius: 4px; }}
+        button {{ width: 100%; padding: 0.5rem; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }}
+        button:hover {{ background: #0056b3; }}
+        .error {{ color: red; margin: 0.5rem 0; }}
+    </style>
 </head>
 <body>
-<form method="POST" action="/login">
-  <h1>Binance Futures Bot</h1>
-  <p class="sub">Digite a senha para acessar o painel.</p>
-  <input id="password" type="password" name="password" placeholder="Senha" autocomplete="current-password" autofocus required>
-  <button id="login-btn" type="submit">Entrar</button>
-  {err_html}
-</form>
+    <div class="login-box">
+        <h1>Binance Futures Bot</h1>
+        <p>Digite a senha para acessar o painel.</p>
+        <form method="POST" action="/login">
+            <input type="password" name="password" placeholder="Senha" required>
+            <button type="submit">Entrar</button>
+        </form>
+        {err_html}
+    </div>
 </body>
 </html>"##,
         err_html = err_html
